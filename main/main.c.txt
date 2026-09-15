@@ -1,0 +1,918 @@
+// เจอบั๊ก (001) เมื่อเล่นวิดีโอ 40 นาที ไปประมาณ 10 นาทีกว่าๆ ก็เกิดอาการค้างทั้งภาพและเสียง
+
+#include <stdio.h>
+#include <string.h>
+#include <strings.h>
+#include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_http_client.h"
+#include "esp32_wifi.h"
+#include "sd_protocol_types.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+#include "ff.h"
+#include "diskio.h"
+#include "driver/i2c_master.h"
+#include "driver/spi_master.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+
+#include "driver/gpio.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_ldo_regulator.h"
+#include "esp_dma_utils.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_lcd_ek79007.h"
+#include "esp_idf_version.h"
+#include "lvgl.h"
+#include "esp_lvgl_port.h"
+#include "demos/lv_demos.h"
+
+#include "driver/jpeg_decode.h"
+#include "avilib.h"
+#include "freertos/ringbuf.h"
+#include "esp32_mp3dec.h"
+#include "helix/pub/mp3dec.h"
+#include "esp32_avidec.h"
+#include "es8311.c"
+
+#include "driver/i2c_master.h"
+#include "esp_lcd_touch_gt911.h"
+
+#define PIN_NUM_CLK    GPIO_NUM_43
+#define PIN_NUM_CMD    GPIO_NUM_44
+#define PIN_NUM_D0     GPIO_NUM_39
+#define PIN_NUM_D1     GPIO_NUM_40
+#define PIN_NUM_D2     GPIO_NUM_41
+#define PIN_NUM_D3     GPIO_NUM_42
+
+// ขา I2S สำหรับ ES8311
+#define I2S_MCLK_IO       GPIO_NUM_13
+#define I2S_BCLK_IO       GPIO_NUM_12
+#define I2S_WS_IO         GPIO_NUM_10
+#define I2S_DOUT_IO       GPIO_NUM_9
+
+// ขาเปิดเพาเวอร์แอมป์ลำโพง (ขึ้นอยู่กับแบบวงจรของบอร์ด เช่น GPIO 26, 53 หรือ 45)
+#define PA_ENABLE_GPIO    GPIO_NUM_53
+
+#define BENCH_FILE_PATH   "0:/bench.tmp"
+#define BENCH_TOTAL_BYTES (64 * 1024 * 1024)
+#define BENCH_CHUNK_SIZE  (64 * 1024)
+
+#define TAG_FS "SD_FILES"
+#define MAX_DEPTH    6     // จำกัดความลึกสูงสุดไม่เกิน 6 ระดับชั้น
+#define MAX_PATH_LEN 512
+
+// ── กำหนดขา GPIO ของ Touch IC ตามบอร์ดของคุณ ──
+#define TOUCH_I2C_SDA         GPIO_NUM_7
+#define TOUCH_I2C_SCL         GPIO_NUM_8
+#define TOUCH_PIN_INT         GPIO_NUM_NC
+#define TOUCH_PIN_RST         GPIO_NUM_23
+
+#define TAG "LVGL_P4"
+
+#define LCD_H_RES              1024
+#define LCD_V_RES              600
+#define PIN_NUM_BK_LIGHT       GPIO_NUM_32
+#define PIN_NUM_LCD_RST        GPIO_NUM_33
+
+static esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
+static esp_lcd_panel_handle_t panel_handle = NULL;
+static esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL;
+
+static SemaphoreHandle_t s_draw_done_sem = NULL;
+static RingbufHandle_t   s_audio_ringbuf = NULL;
+static i2s_chan_handle_t s_i2s_tx_chan = NULL;
+static volatile bool     s_audio_flush = false;
+static volatile bool     s_audio_paused = false;
+
+static esp32_avidec_t    s_player;
+esp32_mp3dec_t           mp3;
+
+// ตัวแปรส่วนจัดการถอดรหัสภาพระดับ Global
+static jpeg_decoder_handle_t s_jpeg_dec = NULL;
+static jpeg_decode_cfg_t     s_dec_cfg;
+static uint8_t              *s_video_fb[2] = {NULL, NULL};
+static int                   s_fb_idx = 0;
+static uint32_t              s_aligned_w = 0;
+static uint32_t              s_v_height = 0;
+static size_t                s_out_pixel_bytes = 0;
+static int                   s_x_start = 0;
+static int                   s_y_start = 0;
+
+esp_err_t display_jpeg_direct(esp_lcd_panel_handle_t panel, const char *file_path);
+
+/* ── ฟังก์ชันเปิดไฟ Backlight ───────────────────────────────────── */
+static void bsp_enable_backlight(void) {
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << PIN_NUM_BK_LIGHT
+    };
+    gpio_config(&bk_gpio_config);
+    gpio_set_level(PIN_NUM_BK_LIGHT, 0);
+}
+
+static esp_lcd_touch_handle_t tp_handle = NULL;
+
+static void setup_touchscreen(lv_display_t *display) {
+    ESP_LOGI(TAG, "Initializing Touchscreen (GT911)...");
+
+    // 1. เริ่มระบบ I2C Master Bus (IDF v6.x Driver)
+    i2c_master_bus_config_t i2c_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_0,
+        .scl_io_num = TOUCH_I2C_SCL,
+        .sda_io_num = TOUCH_I2C_SDA,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t i2c_bus_handle;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle));
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // 2. ผูก I2C IO เข้ากับ Touch Panel
+    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
+    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    tp_io_config.scl_speed_hz = 400000;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus_handle, &tp_io_config, &tp_io_handle));
+
+    // 3. กำหนดค่าคอนฟิกของ GT911
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = LCD_H_RES,
+        .y_max = LCD_V_RES,
+        .rst_gpio_num = TOUCH_PIN_RST,
+        .int_gpio_num = TOUCH_PIN_INT,
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            // หากคุณกลับหัวจอ 180 องศา ให้สลับแกนพิกัดสัมผัสตรงนี้:
+            .swap_xy = 0,
+            .mirror_x = 1, // กลับแกน X ให้ตรงกับภาพที่หมุน 180°
+            .mirror_y = 1, // กลับแกน Y ให้ตรงกับภาพที่หมุน 180°
+        },
+    };
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp_handle));
+
+    // 4. ลงทะเบียนเข้ากับ esp_lvgl_port
+    const lvgl_port_touch_cfg_t touch_cfg = {
+        .disp = display,
+        .handle = tp_handle,
+    };
+    lv_indev_t *touch_indev = lvgl_port_add_touch(&touch_cfg);
+    if (touch_indev == NULL) {
+        ESP_LOGE(TAG, "Failed to register touch indev to LVGL");
+    }
+}
+
+FIL file;
+static FATFS g_fatfs;
+static sdmmc_card_t s_card_info;
+
+// Callback ทำงานเมื่อ DMA2D ส่งภาพเฟรมก่อนหน้าเสร็จเรียบร้อย
+static bool on_color_trans_done_cb(esp_lcd_panel_handle_t panel, 
+                                   esp_lcd_dpi_panel_event_data_t *edata, 
+                                   void *user_ctx)
+{
+    BaseType_t need_yield = pdFALSE;
+    xSemaphoreGiveFromISR(s_draw_done_sem, &need_yield);
+    return (need_yield == pdTRUE);
+}
+
+static bool is_jpeg_file(const char *filename)
+{
+    const char *dot = strrchr(filename, '.');
+    if (!dot) return false;
+    return (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0);
+}
+
+static void bsp_enable_speaker_pa(void) {
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << PA_ENABLE_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(PA_ENABLE_GPIO, 1); // สั่ง High เพื่อเปิดวงจรขยายเสียง
+}
+
+#define AUDIO_ACCUM_BUF_SIZE (8 * 1024)
+
+static void avi_audio_stream_task(void *pvParam) {
+    HMP3Decoder mp3_dec = MP3InitDecoder();
+    int16_t *pcm_out = (int16_t *)malloc(1152 * 2 * sizeof(int16_t));
+    MP3FrameInfo frame_info;
+    s_i2s_tx_chan = mp3.i2s_hnd;
+
+    uint8_t *accum_buf = (uint8_t *)malloc(AUDIO_ACCUM_BUF_SIZE);
+    int accum_bytes = 0;
+    uint32_t current_sample_rate = 0;
+
+    while (1) {
+        if (s_audio_paused) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        if (s_audio_flush) {
+            accum_bytes = 0;
+            s_audio_flush = false;
+        }
+
+        size_t item_size = 0;
+        // ปรับเวลารอจาก portMAX_DELAY เป็น 50ms เพื่อให้วนกลับมาเช็ค s_audio_paused ได้
+        uint8_t *chunk = (uint8_t *)xRingbufferReceive(s_audio_ringbuf, &item_size, pdMS_TO_TICKS(50));
+        if (!chunk) continue;
+
+        if (accum_bytes + item_size <= AUDIO_ACCUM_BUF_SIZE) {
+            memcpy(accum_buf + accum_bytes, chunk, item_size);
+            accum_bytes += item_size;
+        } else {
+            accum_bytes = 0;
+        }
+        vRingbufferReturnItem(s_audio_ringbuf, (void *)chunk);
+
+        int bytes_left = accum_bytes;
+        unsigned char *read_ptr = accum_buf;
+
+        while (bytes_left > 0) {
+            int offset = MP3FindSyncWord(read_ptr, bytes_left);
+            if (offset < 0) {
+                bytes_left = 0;
+                break;
+            }
+
+            read_ptr += offset;
+            bytes_left -= offset;
+
+            int err = MP3Decode(mp3_dec, &read_ptr, &bytes_left, pcm_out, 0);
+            if (err == ERR_MP3_NONE) {
+                MP3GetLastFrameInfo(mp3_dec, &frame_info);
+
+                if (frame_info.samprate > 0 && frame_info.samprate != current_sample_rate) {
+                    current_sample_rate = frame_info.samprate;
+                    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(current_sample_rate);
+                    clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+                    i2s_channel_disable(s_i2s_tx_chan);
+                    i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
+                    i2s_channel_enable(s_i2s_tx_chan);
+                }
+
+                size_t pcm_bytes = 0;
+                if (frame_info.nChans == 1) {
+                    for (int i = frame_info.outputSamps - 1; i >= 0; i--) {
+                        pcm_out[i * 2]     = pcm_out[i];
+                        pcm_out[i * 2 + 1] = pcm_out[i];
+                    }
+                    pcm_bytes = frame_info.outputSamps * 2 * sizeof(int16_t);
+                } else {
+                    pcm_bytes = frame_info.outputSamps * sizeof(int16_t);
+                }
+
+                size_t written = 0;
+                i2s_channel_write(s_i2s_tx_chan, pcm_out, pcm_bytes, &written, portMAX_DELAY);
+            } else if (err == ERR_MP3_INDATA_UNDERFLOW) {
+                break;
+            } else {
+                if (bytes_left > 0) {
+                    read_ptr++;
+                    bytes_left--;
+                }
+            }
+        }
+
+        if (bytes_left > 0 && read_ptr != accum_buf) {
+            memmove(accum_buf, read_ptr, bytes_left);
+        }
+        accum_bytes = bytes_left;
+    }
+}
+
+// Callback รับข้อมูลเฟรมภาพ
+static void on_video_frame(const uint8_t *data, size_t len, uint32_t frame_idx, void *user_ctx) {
+    uint32_t out_bytes = 0;
+    esp_err_t err = jpeg_decoder_process(s_jpeg_dec, &s_dec_cfg, 
+                                         data, len,
+                                         s_video_fb[s_fb_idx], s_out_pixel_bytes, &out_bytes);
+    if (err == ESP_OK) {
+        if (xSemaphoreTake(s_draw_done_sem, pdMS_TO_TICKS(50)) == pdTRUE) {
+            esp_lcd_panel_draw_bitmap(panel_handle, s_x_start, s_y_start, 
+                                      s_x_start + s_aligned_w, s_y_start + s_v_height, 
+                                      s_video_fb[s_fb_idx]);
+            s_fb_idx ^= 1;
+        } else {
+            xSemaphoreGive(s_draw_done_sem);
+        }
+    }
+}
+
+// Callback รับก้อนเสียง MP3
+static void on_audio_chunk(const uint8_t *data, size_t len, void *user_ctx) {
+  if (s_audio_ringbuf && !s_audio_paused) {
+        // ใช้ timeout = 0 (ไม่รอ) เพื่อให้ลูปภาพเดินหน้าต่อได้อย่างลื่นไหล
+        xRingbufferSend(s_audio_ringbuf, data, len, 0);
+  }
+}
+
+// Callback รับสถานะการเล่น
+static void on_player_event(esp32_avidec_event_t event, void *event_data, void *user_ctx) {
+    if (event == ESP32_AVIDEC_EVENT_STATE_CHANGED) {
+        esp32_avidec_state_t st = (esp32_avidec_state_t)(uintptr_t)event_data;
+        
+        if (st == ESP32_AVIDEC_STATE_PAUSED) {
+            s_audio_paused = true;
+            // ปิดช่องสัญญาณ I2S ทันที เสียงจะตัดเงียบสนิท 100%
+            if (s_i2s_tx_chan) {
+                i2s_channel_disable(s_i2s_tx_chan);
+            }
+            ESP_LOGI(TAG, "Audio Paused (I2S Disabled)");
+        } 
+        else if (st == ESP32_AVIDEC_STATE_PLAYING) {
+            // เปิดช่องสัญญาณ I2S กลับคืนมาเพื่อเล่นต่อ
+            if (s_i2s_tx_chan) {
+                i2s_channel_enable(s_i2s_tx_chan);
+            }
+            s_audio_paused = false;
+            ESP_LOGI(TAG, "Audio Resumed (I2S Enabled)");
+        } 
+        else if (st == ESP32_AVIDEC_STATE_STOPPED) {
+            s_audio_paused = true;
+            if (s_i2s_tx_chan) {
+                i2s_channel_disable(s_i2s_tx_chan);
+            }
+            // ล้างข้อมูลเสียงตกค้างใน RingBuffer ทิ้งทั้งหมด
+            size_t sz = 0;
+            void *item;
+            while ((item = xRingbufferReceive(s_audio_ringbuf, &sz, 0)) != NULL) {
+                vRingbufferReturnItem(s_audio_ringbuf, item);
+            }
+            s_audio_flush = true;
+        }
+    } 
+    else if (event == ESP32_AVIDEC_EVENT_EOF) {
+        ESP_LOGI(TAG, "Playback Completed!");
+    } 
+    else if (event == ESP32_AVIDEC_EVENT_SEEK_DONE) {
+        size_t sz = 0;
+        void *item;
+        while ((item = xRingbufferReceive(s_audio_ringbuf, &sz, 0)) != NULL) {
+            vRingbufferReturnItem(s_audio_ringbuf, item);
+        }
+        s_audio_flush = true;
+        xSemaphoreGive(s_draw_done_sem);
+    }
+}
+
+void sd_test(void *p)
+{
+  FRESULT fr = f_mount(&g_fatfs, "0:", 1);
+    if (fr != FR_OK) {
+        ESP_LOGE(TAG, "FatFS mount failed! (err=%d)", fr);
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "FatFS mounted successfully.");
+
+  // [แก้ไข] จองบัฟเฟอร์โดยเผื่อ Aligned Height 608 พิกเซลเต็มพิกัด (1024 x 608 x 2 = 1,245,184 B)
+    size_t fb_size = (1024 * 608 * 2) + 64;
+    for (int i = 0; i < 2; i++) {
+        if (!s_video_fb[i]) {
+            s_video_fb[i] = (uint8_t *)heap_caps_aligned_alloc(64, fb_size, MALLOC_CAP_SPIRAM);
+        }
+    }
+
+    // 2. จัดเตรียม RingBuffer และ Task สำหรับถอดรหัสเสียง
+    if (!s_audio_ringbuf) {
+        s_audio_ringbuf = xRingbufferCreate(64 * 1024, RINGBUF_TYPE_NOSPLIT);
+        xTaskCreate(avi_audio_stream_task, "avi_audio", 8192, NULL, 5, NULL);
+    }
+
+    // 3. เริ่มต้นคอมโพเนนต์ esp32_avidec
+    esp32_avidec_cfg_t cfg = ESP32_AVIDEC_CONFIG_DEFAULT();
+    esp32_avidec_init(&s_player, &cfg);
+
+    esp32_avidec_set_video_cb(&s_player, on_video_frame);
+    esp32_avidec_set_audio_cb(&s_player, on_audio_chunk);
+    esp32_avidec_set_event_cb(&s_player, on_player_event);
+
+    esp32_avidec_set_file(&s_player, "0:/output.avi");
+
+    // 4. เตรียม HW JPEG Engine ตามขนาดความละเอียดของวิดีโอที่ตรวจพบ
+    if (!s_jpeg_dec) {
+        jpeg_decode_engine_cfg_t eng_cfg = { .intr_priority = 0, .timeout_ms = 500 };
+        ESP_ERROR_CHECK(jpeg_new_decoder_engine(&eng_cfg, &s_jpeg_dec));
+    }
+    s_dec_cfg.output_format = JPEG_DECODE_OUT_FORMAT_RGB565;
+    s_dec_cfg.rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;
+
+    s_v_height = s_player.height;
+    s_aligned_w = (s_player.width + 15) & ~15;
+    uint32_t aligned_h = (s_v_height + 15) & ~15;
+    s_out_pixel_bytes = s_aligned_w * aligned_h * 2;
+    s_x_start = (LCD_H_RES > s_aligned_w) ? (LCD_H_RES - s_aligned_w) / 2 : 0;
+    s_y_start = (LCD_V_RES > s_v_height) ? (LCD_V_RES - s_v_height) / 2 : 0;
+
+    ESP_LOGI(TAG, "Starting playback: %dx%d @ %.2f FPS", s_player.width, s_player.height, s_player.fps);
+    esp32_avidec_play(&s_player);
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+typedef struct {
+    const char *name;
+    uint32_t freq_khz;
+    float io_voltage;
+    uint32_t slot_flags;
+    uint8_t bus_width;
+} sd_profile_t;
+
+// กำหนด 5 โปรไฟล์จากเร็วสุดลงไปหาปลอดภัยสุด
+static const sd_profile_t s_profiles[] = {
+    //{"UHS-I SDR50 (100MHz 4-bit)", SDMMC_FREQ_SDR50,   1.8f, SDMMC_SLOT_FLAG_UHS1, 4},
+    {"UHS-I DDR50 (50MHz 4-bit)",  SDMMC_FREQ_DDR50,   1.8f, SDMMC_SLOT_FLAG_UHS1, 4},
+    {"High-Speed (40MHz 4-bit)",   SDMMC_FREQ_HIGHSPEED, 3.3f, 0,                      4},
+    {"Standard (20MHz 4-bit)",     SDMMC_FREQ_DEFAULT, 3.3f, 0,                      4},
+    {"Fail-Safe (20MHz 1-bit)",     SDMMC_FREQ_DEFAULT, 3.3f, 0,                      1},
+};
+
+#define PROFILE_COUNT (sizeof(s_profiles) / sizeof(s_profiles[0]))
+#define SD_PROFILE_TRY_COUNT 3
+
+esp_err_t sd_card_init_adaptive(sdmmc_host_t *host, sdmmc_card_t *out_card_info)
+{
+    esp_err_t err = ESP_FAIL;
+
+    for (size_t i = 0; i < PROFILE_COUNT; i++) {
+      for(int j = 0; j < SD_PROFILE_TRY_COUNT; j++){
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        const sd_profile_t *prof = &s_profiles[i];
+        ESP_LOGW("SD_ADAPT", ">> Trying Profile [%d/%d]: %s...", (int)i + 1, (int)PROFILE_COUNT, prof->name);
+
+        host->max_freq_khz = prof->freq_khz;
+        host->io_voltage = prof->io_voltage;
+
+        sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+        slot_config.width = prof->bus_width;
+        slot_config.clk = PIN_NUM_CLK;
+        slot_config.cmd = PIN_NUM_CMD;
+        slot_config.d0  = PIN_NUM_D0;
+        slot_config.d1  = PIN_NUM_D1;
+        slot_config.d2  = PIN_NUM_D2;
+        slot_config.d3  = PIN_NUM_D3;
+        slot_config.cd  = SDMMC_SLOT_NO_CD;
+        slot_config.wp  = SDMMC_SLOT_NO_WP;
+        slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+        slot_config.flags |= prof->slot_flags;
+
+        // เชื่อมขาเข้ากับ Slot 0
+        esp_err_t slot_err = sdmmc_host_init_slot(host->slot, &slot_config);
+        if (slot_err != ESP_OK) {
+            ESP_LOGE("SD_ADAPT", "Failed to init slot for %s", prof->name);
+            sdmmc_host_deinit_slot(host->slot);
+            continue;
+        }
+
+        // 4. ทดสอบตรวจสอบการ์ด (ไม่ใช้ ESP_ERROR_CHECK เพื่อไม่ให้ระบบ Panic)
+        err = sdmmc_card_init(host, out_card_info);
+        if (err == ESP_OK) {
+            // ด่านทดสอบจริง: ลองสตรีมอ่าน 16 เซกเตอร์ (8 KB) เพื่อเช็กสัญญาณ CRC
+            uint8_t *test_buf = heap_caps_aligned_alloc(64, 512 * 16, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+            if (test_buf) {
+                esp_err_t read_test = sdmmc_read_sectors(out_card_info, test_buf, 0, 16);
+                free(test_buf);
+                if (read_test == ESP_OK) {
+                    ESP_LOGI("SD_ADAPT", "SUCCESS! SD Card locked & verified at: %s", prof->name);
+                    return ESP_OK;
+                }
+                ESP_LOGW("SD_ADAPT", "Init OK but Burst Read failed on %s (CRC/Noise), stepping down...", prof->name);
+            }
+        }
+
+        ESP_LOGW("SD_ADAPT", "Profile [%s] failed with err=0x%x (%s), stepping down...", 
+                 prof->name, err, esp_err_to_name(err));
+
+        sdmmc_host_deinit_slot(host->slot);
+        
+        // หน่วงเวลาสั้น ๆ ก่อนเริ่มสเต็ปถัดไป
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+    }
+
+    return err; // ล้มเหลวครบทุกระดับ
+}
+
+#define LCD_H_RES   1024
+#define LCD_V_RES   600
+
+// บัฟเฟอร์เก็บภาพพิกเซล RGB565 ขนาด 1024 x 600 x 2 ไบต์ (~1.23 MB)
+static uint8_t *s_fb_rgb565 = NULL;
+
+esp_err_t display_jpeg_direct(esp_lcd_panel_handle_t panel, const char *file_path)
+{
+    static FIL f;
+    FRESULT fr = f_open(&f, file_path, FA_READ);
+    if (fr != FR_OK) {
+        ESP_LOGE(TAG, "Open file failed: %s (err=%d)", file_path, fr);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    size_t file_size = f_size(&f);
+
+    // 1. อ่านไฟล์เข้า Internal DMA RAM
+    int64_t t0 = esp_timer_get_time();
+    uint8_t *jpeg_raw_buf = (uint8_t *)heap_caps_aligned_alloc(64, file_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!jpeg_raw_buf) {
+        jpeg_raw_buf = (uint8_t *)heap_caps_aligned_alloc(64, file_size, MALLOC_CAP_SPIRAM);
+        if (!jpeg_raw_buf) {
+            f_close(&f);
+            ESP_LOGE(TAG, "Alloc JPEG raw buffer failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    UINT br = 0;
+    fr = f_read(&f, jpeg_raw_buf, file_size, &br);
+    f_close(&f);
+    if (fr != FR_OK || br != file_size) {
+        free(jpeg_raw_buf);
+        ESP_LOGE(TAG, "Read JPEG file incomplete");
+        return ESP_FAIL;
+    }
+    int64_t t_read = esp_timer_get_time() - t0;
+
+    // 2. ตรวจสอบข้อมูล Header ของภาพ
+    jpeg_decoder_handle_t jpeg_dec = NULL;
+    jpeg_decode_engine_cfg_t eng_cfg = {
+        .intr_priority = 0,
+        .timeout_ms = 1000,
+    };
+    ESP_ERROR_CHECK(jpeg_new_decoder_engine(&eng_cfg, &jpeg_dec));
+
+    jpeg_decode_picture_info_t pic_info;
+    esp_err_t err = jpeg_decoder_get_info(jpeg_raw_buf, file_size, &pic_info);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Invalid JPEG Header: %s", file_path);
+        jpeg_del_decoder_engine(jpeg_dec);
+        free(jpeg_raw_buf);
+        return err;
+    }
+
+    // ดักข้อจำกัดที่ 1: ความกว้างและความสูงต้องหารด้วย 8 ลงตัว
+    if ((pic_info.width * pic_info.height % 8) != 0) {
+        ESP_LOGW(TAG, "Skip %s: Dimension (%ux%u) not divisible by 8!", 
+                 file_path, pic_info.width, pic_info.height);
+        jpeg_del_decoder_engine(jpeg_dec);
+        free(jpeg_raw_buf);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    // ดักข้อจำกัดที่ 2: คำนวณขนาดหลัง 16-byte alignment
+    uint32_t aligned_w = (pic_info.width + 15) & ~15;
+    uint32_t aligned_h = (pic_info.height + 15) & ~15;
+    size_t required_out_bytes = aligned_w * aligned_h * 2; // RGB565
+
+    // หากภาพใหญ่เกินกว่าหน้าจอ 1024x600 ให้ข้ามภาพนี้ไปก่อน
+    if (aligned_w > LCD_H_RES || aligned_h > LCD_V_RES) {
+        ESP_LOGW(TAG, "Skip %s: Resolution (%ux%u) exceeds display limit (1024x600)!", 
+                 file_path, pic_info.width, pic_info.height);
+        jpeg_del_decoder_engine(jpeg_dec);
+        free(jpeg_raw_buf);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // 3. เริ่มถอดรหัสด้วยฮาร์ดแวร์
+    int64_t t1 = esp_timer_get_time();
+    jpeg_decode_cfg_t dec_cfg = {
+        .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+        .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
+    };
+
+    if (!s_fb_rgb565) {
+        s_fb_rgb565 = (uint8_t *)heap_caps_aligned_alloc(64, LCD_H_RES * LCD_V_RES * 2, MALLOC_CAP_SPIRAM);
+        if (!s_fb_rgb565) {
+            ESP_LOGE(TAG, "Critical: Cannot allocate display framebuffer in PSRAM!");
+            jpeg_del_decoder_engine(jpeg_dec);
+            free(jpeg_raw_buf);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    uint32_t out_bytes = 0;
+    // ส่งขนาดบัฟเฟอร์ที่แท้จริงตามที่ฮาร์ดแวร์ต้องการ (required_out_bytes)
+    err = jpeg_decoder_process(jpeg_dec, &dec_cfg, jpeg_raw_buf, file_size,
+                               s_fb_rgb565, required_out_bytes, &out_bytes);
+    int64_t t_decode = esp_timer_get_time() - t1;
+
+    jpeg_del_decoder_engine(jpeg_dec);
+    free(jpeg_raw_buf);
+
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "Skip %s: Progressive JPEG not supported by hardware (Baseline only)", file_path);
+        return err;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Hardware decode failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    int64_t t2 = esp_timer_get_time();
+
+    // 2. คำนวณตำแหน่งกึ่งกลางจอโดยอิงจากขนาด Aligned
+    int x_start = (LCD_H_RES > aligned_w) ? (LCD_H_RES - aligned_w) / 2 : 0;
+    int y_start = (LCD_V_RES > pic_info.height) ? (LCD_V_RES - pic_info.height) / 2 : 0;
+
+    // 3. ส่งค่า aligned_w ให้ตัวขับจอ
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 
+                                              x_start, 
+                                              y_start, 
+                                              x_start + aligned_w, 
+                                              y_start + pic_info.height, 
+                                              s_fb_rgb565));
+    int64_t t_draw = esp_timer_get_time() - t2;
+
+    int64_t total_time = esp_timer_get_time() - t0;
+
+    ESP_LOGI(TAG, "================ Direct Render Performance ================");
+    ESP_LOGI(TAG, "Image Size       : %u bytes (%ux%u)", (unsigned)file_size, pic_info.width, pic_info.height);
+    ESP_LOGI(TAG, "1. SD Read       : %.2f ms (Throughput: %.2f MB/s)", 
+             (float)t_read / 1000.0f, ((float)file_size / 1048576.0f) / ((float)t_read / 1000000.0f));
+    ESP_LOGI(TAG, "2. HW JPEG Decode: %.2f ms", (float)t_decode / 1000.0f);
+    ESP_LOGI(TAG, "3. MIPI Flush    : %.2f ms", (float)t_draw / 1000.0f);
+    ESP_LOGI(TAG, "Total Frame Time : %.2f ms (Potential FPS: %.1f)", 
+             (float)total_time / 1000.0f, 1000000.0f / (float)total_time);
+    ESP_LOGI(TAG, "===========================================================");
+
+    return ESP_OK;
+}
+
+void console_task(void *pvParameters) {
+    char line[64];
+    int idx = 0;
+
+    printf("\n========================================\n");
+    printf("   ESP32-P4 Video CLI Console Ready     \n");
+    printf("========================================\n");
+
+    while (1) {
+        int c = getchar();
+        if (c == EOF || c < 0) {
+            vTaskDelay(pdMS_TO_TICKS(30));
+            continue;
+        }
+
+        if (c == '\r' || c == '\n') {
+            if (idx == 0) {
+                printf("\n>> ");
+                fflush(stdout);
+                continue;
+            }
+            line[idx] = '\0';
+            printf("\n");
+
+            int sec = 0, min = 0;
+            if (sscanf(line, "seek %d:%d", &min, &sec) == 2) {
+                esp32_avidec_seek(&s_player, min * 60 + sec);
+            } else if (sscanf(line, "seek %d", &sec) == 1) {
+                esp32_avidec_seek(&s_player, sec);
+            } else if (strcmp(line, "status") == 0) {
+                uint32_t cur = esp32_avidec_get_current_sec(&s_player);
+                uint32_t tot = esp32_avidec_get_total_sec(&s_player);
+                printf("[STATUS] %02lu:%02lu / %02lu:%02lu (State: %d)\n",
+                       (unsigned long)(cur / 60), (unsigned long)(cur % 60),
+                       (unsigned long)(tot / 60), (unsigned long)(tot % 60),
+                       esp32_avidec_get_state(&s_player));
+            } else if (strcmp(line, "pause") == 0) {
+                esp32_avidec_pause(&s_player);
+            } else if (strcmp(line, "resume") == 0) {
+                esp32_avidec_resume(&s_player);
+            } else {
+                printf("Unknown command: %s\n", line);
+            }
+
+            idx = 0;
+            printf(">> ");
+            fflush(stdout);
+        } else if (c == '\b' || c == 127) {
+            if (idx > 0) {
+                idx--;
+                printf("\b \b");
+                fflush(stdout);
+            }
+        } else if (idx < sizeof(line) - 1) {
+            line[idx++] = (char)c;
+            putchar(c);
+            fflush(stdout);
+        }
+    }
+}
+
+void app_main(void) {
+  
+    ESP_LOGI(TAG, "Initializing MIPI-DSI Host...");
+
+    ESP_LOGI(TAG, "MIPI DSI PHY Powered on");
+    esp_ldo_channel_config_t ldo_mipi_phy_config = {
+        .chan_id = 3,//TEST_MIPI_DSI_PHY_PWR_LDO_CHAN,
+        .voltage_mv = 2500,//TEST_MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV,
+    };
+    ESP_ERROR_CHECK(esp_ldo_acquire_channel(&ldo_mipi_phy_config, &ldo_mipi_phy));
+
+    ESP_LOGI(TAG, "Initialize MIPI DSI bus");
+    esp_lcd_dsi_bus_config_t bus_config = EK79007_PANEL_BUS_DSI_2CH_CONFIG();
+    bus_config.lane_bit_rate_mbps = 1000;
+    ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus));
+
+    ESP_LOGI(TAG, "Install panel IO");
+    esp_lcd_dbi_io_config_t dbi_config = EK79007_PANEL_IO_DBI_CONFIG();
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io));
+
+    ESP_LOGI(TAG, "Install LCD driver of ek79007");
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    esp_lcd_dpi_panel_config_t dpi_config = EK79007_1024_600_PANEL_60HZ_CONFIG_CF(LCD_COLOR_FMT_RGB565);
+    dpi_config.dpi_clock_freq_mhz = 70;
+    dpi_config.num_fbs = 2;
+#else
+    esp_lcd_dpi_panel_config_t dpi_config = EK79007_1024_600_PANEL_60HZ_CONFIG(TEST_MIPI_DPI_PX_FORMAT);
+#endif
+    ek79007_vendor_config_t vendor_config = {
+        .mipi_config = {
+            .dsi_bus = mipi_dsi_bus,
+            .dpi_config = &dpi_config,
+            .lane_num = 2,//TEST_MIPI_DSI_LANE_NUM,
+        },
+    };
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = 33,//TEST_PIN_NUM_LCD_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,//TEST_LCD_BIT_PER_PIXEL,
+        .vendor_config = &vendor_config,
+    };
+    
+    ESP_ERROR_CHECK(esp_lcd_new_panel_ek79007(mipi_dbi_io, &panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_dpi_panel_enable_dma2d(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+
+    bsp_enable_backlight();
+
+    // สร้าง Semaphore สำหรับรอ DMA2D
+    s_draw_done_sem = xSemaphoreCreateBinary();
+    xSemaphoreGive(s_draw_done_sem); // อนุญาตให้วาดเฟรมแรกได้ทันที
+
+    // ลงทะเบียน Event Callback เข้ากับ DPI Panel
+    esp_lcd_dpi_panel_event_callbacks_t cbs = {
+        .on_color_trans_done = on_color_trans_done_cb,
+    };
+    ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, NULL));
+
+    // 1. เริ่มระบบ I2C Master Bus (IDF v6.x Driver)
+    i2c_master_bus_config_t i2c_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_0,
+        .scl_io_num = TOUCH_I2C_SCL,
+        .sda_io_num = TOUCH_I2C_SDA,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t i2c_bus_handle;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle));
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    esp32_mp3dec_hw_init(&mp3, I2S_MCLK_IO, I2S_BCLK_IO, I2S_WS_IO, I2S_DOUT_IO, I2S_GPIO_UNUSED);
+
+    // พัก 50ms ให้สัญญาณนาฬิกา MCLK เสถียร
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // 2. ค่อยส่งคำสั่ง I2C ไปปลุกชิป ES8311
+    es8311_codec_init(i2c_bus_handle);
+
+    // 3. เปิดเพาเวอร์แอมป์ขับลำโพง
+    bsp_enable_speaker_pa();
+/*
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .panel_handle = panel_handle,
+        .buffer_size = LCD_H_RES * LCD_V_RES,
+        .double_buffer = true,
+        .hres = LCD_H_RES,
+        .vres = LCD_V_RES,
+        .monochrome = false,
+        .color_format = LV_COLOR_FORMAT_RGB565,
+        .flags = {
+            .swap_bytes = false,
+            .buff_dma = false,
+            .buff_spiram = true,
+            .direct_mode = true,
+            .sw_rotate = true,
+        }
+    };
+
+    const lvgl_port_display_dsi_cfg_t dsi_cfg = {
+        .flags = {
+            .avoid_tearing = true, // เปิดสร้าง Semaphore รอ VSYNC เพื่อภาพไร้รอยฉีก
+        }
+    };
+
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    esp_err_t err = lvgl_port_init(&lvgl_cfg);
+
+    // ใช้ฟังก์ชันเฉพาะของ MIPI-DSI
+    lv_display_t *display = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
+
+    setup_touchscreen(display);
+
+    if(lvgl_port_lock(1000)){
+      lv_demo_widgets();
+    }
+    lvgl_port_unlock();*/
+
+vTaskDelay(pdMS_TO_TICKS(3000));
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_SDR50;
+
+    esp_err_t host_err = sdmmc_host_init();
+    if (host_err == ESP_OK) {
+        ESP_LOGI("SD", "SDMMC Host Controller initialized by app_main");
+    } else if (host_err == ESP_ERR_NOT_FOUND || host_err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGI("SD", "SDMMC Host Controller already initialized (shared with ESP-Hosted)");
+    } else {
+        // หากเกิดข้อผิดพลาดร้ายแรงอื่น ๆ ให้แจ้งเตือน
+        ESP_ERROR_CHECK(host_err);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    sd_pwr_ctrl_ldo_config_t ldo_config = {
+        .ldo_chan_id = 4,
+    };
+    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
+
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create a new on-chip LDO power control driver");
+        return;
+    }
+    host.pwr_ctrl_handle = pwr_ctrl_handle;
+    host.current_limit = SDMMC_CURRENT_LIMIT_800MA;
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    /*
+    // 2. ตั้งค่า Slot และจับคู่ GPIO โหมด 4-bit
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+    slot_config.clk = PIN_NUM_CLK;
+    slot_config.cmd = PIN_NUM_CMD;
+    slot_config.d0 = PIN_NUM_D0;
+    slot_config.d1 = PIN_NUM_D1;
+    slot_config.d2 = PIN_NUM_D2;
+    slot_config.d3 = PIN_NUM_D3;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    slot_config.flags |= SDMMC_SLOT_FLAG_UHS1;
+    slot_config.cd = SDMMC_SLOT_NO_CD;
+    slot_config.wp = SDMMC_SLOT_NO_WP;
+    
+    ESP_ERROR_CHECK(sdmmc_host_init_slot(host.slot, &slot_config));
+    */
+
+    esp_err_t init_res = sd_card_init_adaptive(&host, &s_card_info);
+    if (init_res != ESP_OK) {
+        ESP_LOGE("SD", "Failed to initialize SD card in all profiles! (Card missing or broken)");
+        return;
+    }
+
+    //ESP_ERROR_CHECK(sdmmc_card_init(&host, &s_card_info));
+    sdmmc_card_print_info(stdout, &s_card_info);
+
+    // 4. ผูกการ์ดเข้ากับ diskio ของ FatFs
+    diskio_register_sd_card(&s_card_info);
+
+    xTaskCreate(sd_test, "sd", 8192, NULL, 5, NULL);
+    xTaskCreate(console_task, "cli_task", 4096, NULL, 3, NULL);
+
+    return;
+
+/*
+    init_lvgl_display(panel_handle);
+
+    //create_demo_ui();
+    
+
+    xTaskCreate(lvgl_task, "lvgl", 16384, NULL, 6, NULL);
+
+    while(1){
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }*/
+}

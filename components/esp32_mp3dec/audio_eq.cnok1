@@ -1,0 +1,519 @@
+/**
+ * @file audio_eq.c
+ * @brief 3-Band Parametric EQ with Professional Dynamic Range Management
+ */
+
+#include "audio_eq.h"
+#include <string.h>
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/* =========================================================================
+ * Coefficient Computation (Audio EQ Cookbook)
+ * ========================================================================= */
+
+static void compute_low_shelf(uint16_t freq_hz, int8_t gain_db,
+                              uint32_t sample_rate, biquad_coeffs_t *out)
+{
+    if (gain_db == 0) {
+        out->b0 = (1 << EQ_Q_FORMAT);
+        out->b1 = out->b2 = out->a1 = out->a2 = 0;
+        return;
+    }
+
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * M_PI * (float)freq_hz / (float)sample_rate;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * 0.7071f);
+    float sqrtA = sqrtf(A);
+    float two_sqrtA_alpha = 2.0f * sqrtA * alpha;
+
+    float b0 = A * ((A + 1) - (A - 1) * cos_w0 + two_sqrtA_alpha);
+    float b1 = 2.0f * A * ((A - 1) - (A + 1) * cos_w0);
+    float b2 = A * ((A + 1) - (A - 1) * cos_w0 - two_sqrtA_alpha);
+    float a0 = (A + 1) + (A - 1) * cos_w0 + two_sqrtA_alpha;
+    float a1 = -2.0f * ((A - 1) + (A + 1) * cos_w0);
+    float a2 = (A + 1) + (A - 1) * cos_w0 - two_sqrtA_alpha;
+
+    float scale = (float)(1 << EQ_Q_FORMAT) / a0;
+    out->b0 = (int32_t)roundf(b0 * scale);
+    out->b1 = (int32_t)roundf(b1 * scale);
+    out->b2 = (int32_t)roundf(b2 * scale);
+    out->a1 = (int32_t)roundf(a1 * scale);
+    out->a2 = (int32_t)roundf(a2 * scale);
+}
+
+static void compute_peaking(uint16_t freq_hz, int8_t gain_db,
+                            uint32_t sample_rate, biquad_coeffs_t *out)
+{
+    if (gain_db == 0) {
+        out->b0 = (1 << EQ_Q_FORMAT);
+        out->b1 = out->b2 = out->a1 = out->a2 = 0;
+        return;
+    }
+
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * M_PI * (float)freq_hz / (float)sample_rate;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * 1.0f);
+
+    float b0 = 1.0f + alpha * A;
+    float b1 = -2.0f * cos_w0;
+    float b2 = 1.0f - alpha * A;
+    float a0 = 1.0f + alpha / A;
+    float a1 = -2.0f * cos_w0;
+    float a2 = 1.0f - alpha / A;
+
+    float scale = (float)(1 << EQ_Q_FORMAT) / a0;
+    out->b0 = (int32_t)roundf(b0 * scale);
+    out->b1 = (int32_t)roundf(b1 * scale);
+    out->b2 = (int32_t)roundf(b2 * scale);
+    out->a1 = (int32_t)roundf(a1 * scale);
+    out->a2 = (int32_t)roundf(a2 * scale);
+}
+
+static void compute_high_shelf(uint16_t freq_hz, int8_t gain_db,
+                               uint32_t sample_rate, biquad_coeffs_t *out)
+{
+    if (gain_db == 0) {
+        out->b0 = (1 << EQ_Q_FORMAT);
+        out->b1 = out->b2 = out->a1 = out->a2 = 0;
+        return;
+    }
+
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * M_PI * (float)freq_hz / (float)sample_rate;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * 0.7071f);
+    float sqrtA = sqrtf(A);
+    float two_sqrtA_alpha = 2.0f * sqrtA * alpha;
+
+    float b0 = A * ((A + 1) + (A - 1) * cos_w0 + two_sqrtA_alpha);
+    float b1 = -2.0f * A * ((A - 1) + (A + 1) * cos_w0);
+    float b2 = A * ((A + 1) + (A - 1) * cos_w0 - two_sqrtA_alpha);
+    float a0 = (A + 1) - (A - 1) * cos_w0 + two_sqrtA_alpha;
+    float a1 = 2.0f * ((A - 1) - (A + 1) * cos_w0);
+    float a2 = (A + 1) - (A - 1) * cos_w0 - two_sqrtA_alpha;
+
+    float scale = (float)(1 << EQ_Q_FORMAT) / a0;
+    out->b0 = (int32_t)roundf(b0 * scale);
+    out->b1 = (int32_t)roundf(b1 * scale);
+    out->b2 = (int32_t)roundf(b2 * scale);
+    out->a1 = (int32_t)roundf(a1 * scale);
+    out->a2 = (int32_t)roundf(a2 * scale);
+}
+
+/* =========================================================================
+ * Lookahead Limiter
+ * ========================================================================= */
+
+static void limiter_init(lookahead_limiter_t *lim, uint32_t sample_rate)
+{
+    // Lookahead: 20ms (longer to catch peaks better)
+    lim->lookahead_ms = 20;
+    lim->delay_length = (int32_t)(sample_rate * lim->lookahead_ms / 1000.0f);
+    
+    // Allocate delay buffers
+    lim->delay_buffer_l = (int64_t *)calloc(lim->delay_length, sizeof(int64_t));
+    lim->delay_buffer_r = (int64_t *)calloc(lim->delay_length, sizeof(int64_t));
+    lim->delay_write_idx = 0;
+    
+    // Envelope follower
+    lim->envelope = 0;
+    lim->gain = (int64_t)1 << EQ_Q_FORMAT;  // Unity gain (1.0 in Q28)
+    
+    // Threshold: 95% of INT64_MAX (for int64 processing)
+    lim->threshold = (int64_t)(INT64_MAX * 0.95);
+    
+    // Attack: 0.1ms (very fast to catch peaks)
+    float attack_time = 0.0001f;
+    lim->attack_coeff = (int64_t)((1.0f - expf(-1.0f / (attack_time * sample_rate))) * (1 << EQ_Q_FORMAT));
+    
+    // Release: 50ms (faster recovery for better dynamics)
+    float release_time = 0.05f;
+    lim->release_coeff = (int64_t)((1.0f - expf(-1.0f / (release_time * sample_rate))) * (1 << EQ_Q_FORMAT));
+}
+
+static void limiter_cleanup(lookahead_limiter_t *lim)
+{
+    if (lim->delay_buffer_l) {
+        free(lim->delay_buffer_l);
+        lim->delay_buffer_l = NULL;
+    }
+    if (lim->delay_buffer_r) {
+        free(lim->delay_buffer_r);
+        lim->delay_buffer_r = NULL;
+    }
+}
+
+static void limiter_process(lookahead_limiter_t *lim, int64_t *in_l, int64_t *in_r,
+                            int64_t *out_l, int64_t *out_r)
+{
+    // Detect peak of current input
+    int64_t abs_l = (*in_l >= 0) ? *in_l : -*in_l;
+    int64_t abs_r = (*in_r >= 0) ? *in_r : -*in_r;
+    int64_t peak = (abs_l > abs_r) ? abs_l : abs_r;
+    
+    // Envelope follower
+    if (peak > lim->envelope) {
+        // Attack (fast)
+        // Multi-step to avoid overflow: ((peak - envelope) * attack_coeff) >> 28
+        int64_t diff = peak - lim->envelope;
+        int64_t scaled = ((diff >> 14) * (lim->attack_coeff >> 14));
+        lim->envelope += scaled;
+    } else {
+        // Release (slow)
+        // Multi-step to avoid overflow: ((peak - envelope) * release_coeff) >> 28
+        int64_t diff = peak - lim->envelope;
+        int64_t scaled = ((diff >> 14) * (lim->release_coeff >> 14));
+        lim->envelope += scaled;
+    }
+    
+    // Calculate gain reduction
+    int64_t gain;
+    if (lim->envelope > lim->threshold) {
+        // Use double to avoid overflow: (threshold << 28) / envelope
+        double gain_f = ((double)lim->threshold / (double)lim->envelope) * (double)(1LL << EQ_Q_FORMAT);
+        gain = (int64_t)gain_f;
+    } else {
+        gain = (int64_t)1 << EQ_Q_FORMAT;  // Unity gain
+    }
+    
+    // Store gain for monitoring
+    lim->gain = gain;
+    
+    // Store current input in buffer
+    lim->delay_buffer_l[lim->delay_write_idx] = *in_l;
+    lim->delay_buffer_r[lim->delay_write_idx] = *in_r;
+    
+    // Advance write pointer
+    lim->delay_write_idx = (lim->delay_write_idx + 1) % lim->delay_length;
+    
+    // Read delayed sample (from delay_length ago)
+    // After incrementing, delay_write_idx points to the oldest sample
+    int64_t delayed_l = lim->delay_buffer_l[lim->delay_write_idx];
+    int64_t delayed_r = lim->delay_buffer_r[lim->delay_write_idx];
+    
+    // Apply gain to delayed sample
+    // Multi-step to avoid overflow: (delayed * gain) >> 28
+    *out_l = (int64_t)((delayed_l >> 14) * (gain >> 14));
+    *out_r = (int64_t)((delayed_r >> 14) * (gain >> 14));
+}
+
+/* =========================================================================
+ * Biquad Processing
+ * ========================================================================= */
+
+static inline int64_t biquad_process(const biquad_coeffs_t *c, biquad_state_t *s, int64_t in)
+{
+    if (c->b1 == 0 && c->a1 == 0) return in;  // Bypass for 0 dB
+
+    // Multi-step calculation to avoid overflow without __int128
+    // Shift >> 14 before multiply, then shift >> 14 again = total >> 28
+    int64_t term1 = ((int64_t)(c->b0 >> 14) * (in >> 14));
+    int64_t term2 = ((int64_t)(c->b1 >> 14) * (s->x1 >> 14));
+    int64_t term3 = ((int64_t)(c->b2 >> 14) * (s->x2 >> 14));
+    int64_t term4 = ((int64_t)(c->a1 >> 14) * (s->y1 >> 14));
+    int64_t term5 = ((int64_t)(c->a2 >> 14) * (s->y2 >> 14));
+    
+    int64_t out = term1 + term2 + term3 - term4 - term5;
+
+    s->x2 = s->x1;
+    s->x1 = in;
+    s->y2 = s->y1;
+    s->y1 = out;
+
+    return out;
+}
+
+/* =========================================================================
+ * Soft Clip (safety net) - int64 version
+ * ========================================================================= */
+
+static inline int64_t soft_clip(int64_t x)
+{
+    // Use 95% of INT64_MAX as threshold (not 50%)
+    const int64_t THRESH = (int64_t)(INT64_MAX * 0.95);
+    const int64_t R = INT64_MAX - THRESH;
+
+    int64_t sign = (x >= 0) ? 1 : -1;
+    int64_t ax = (x >= 0) ? x : -x;
+
+    if (ax <= THRESH) {
+        return (int64_t)(sign * ax);
+    }
+
+    int64_t t = ax - THRESH;
+    int64_t y = THRESH + (R * t) / (t + R);
+
+    if (y > INT64_MAX) y = INT64_MAX;
+    return (int64_t)(sign * y);
+}
+
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
+
+void audio_eq_init(audio_eq_3band_t *eq)
+{
+    if (!eq) return;
+    memset(eq, 0, sizeof(audio_eq_3band_t));
+
+    eq->bass_freq_hz = EQ_DEFAULT_BASS_HZ;
+    eq->mid_freq_hz = EQ_DEFAULT_MID_HZ;
+    eq->treble_freq_hz = EQ_DEFAULT_TREBLE_HZ;
+
+    // Initialize coefficients to 0 dB (pass-through)
+    compute_low_shelf(eq->bass_freq_hz, 0, EQ_SAMPLE_RATE, &eq->bass_coeffs);
+    compute_peaking(eq->mid_freq_hz, 0, EQ_SAMPLE_RATE, &eq->mid_coeffs);
+    compute_high_shelf(eq->treble_freq_hz, 0, EQ_SAMPLE_RATE, &eq->treble_coeffs);
+
+    // Initialize limiter
+    limiter_init(&eq->limiter, EQ_SAMPLE_RATE);
+
+    // Makeup gain: 1.0 (Q28)
+    eq->makeup_gain = (int64_t)1 << EQ_Q_FORMAT;
+
+    eq->enabled = false;
+}
+
+void audio_eq_set_params(audio_eq_3band_t *eq, int8_t bass_db, int8_t mid_db, int8_t treble_db)
+{
+    if (!eq) return;
+
+    // Clamp values
+    if (bass_db < EQ_MIN_DB) bass_db = EQ_MIN_DB;
+    if (bass_db > EQ_MAX_DB) bass_db = EQ_MAX_DB;
+    if (mid_db < EQ_MIN_DB) mid_db = EQ_MIN_DB;
+    if (mid_db > EQ_MAX_DB) mid_db = EQ_MAX_DB;
+    if (treble_db < EQ_MIN_DB) treble_db = EQ_MIN_DB;
+    if (treble_db > EQ_MAX_DB) treble_db = EQ_MAX_DB;
+
+    eq->bass_db = bass_db;
+    eq->mid_db = mid_db;
+    eq->treble_db = treble_db;
+
+    // Warning for high boost levels
+    if (bass_db > 12) {
+        printf("⚠️  NOTE: Bass boost +%d dB may be limited by adaptive limiter to prevent clipping\n", bass_db);
+    }
+    if (mid_db > 12) {
+        printf("⚠️  NOTE: Mid boost +%d dB may be limited by adaptive limiter to prevent clipping\n", mid_db);
+    }
+    if (treble_db > 12) {
+        printf("⚠️  NOTE: Treble boost +%d dB may be limited by adaptive limiter to prevent clipping\n", treble_db);
+    }
+
+    // Compute coefficients
+    compute_low_shelf(eq->bass_freq_hz, bass_db, EQ_SAMPLE_RATE, &eq->bass_coeffs);
+    compute_peaking(eq->mid_freq_hz, mid_db, EQ_SAMPLE_RATE, &eq->mid_coeffs);
+    compute_high_shelf(eq->treble_freq_hz, treble_db, EQ_SAMPLE_RATE, &eq->treble_coeffs);
+
+    eq->bass_active = (bass_db != 0);
+    eq->mid_active = (mid_db != 0);
+    eq->treble_active = (treble_db != 0);
+    eq->enabled = eq->bass_active || eq->mid_active || eq->treble_active;
+
+    // Calculate max boost for auto input attenuation
+    int8_t max_db = 0;
+    if (bass_db > max_db) max_db = bass_db;
+    if (mid_db > max_db) max_db = mid_db;
+    if (treble_db > max_db) max_db = treble_db;
+    eq->max_boost_db = max_db;
+
+    // Auto input attenuation: attenuate input to create headroom for boost
+    // Formula: attenuation = 1 / (max_boost_linear * safety_margin)
+    // Safety margin: 1.5 dB (≈ 1.19x) to handle transient peaks
+    if (max_db > 0) {
+        double max_boost_linear = pow(10.0, max_db / 20.0);
+        double safety_margin = 1.19;  // 1.5 dB
+        double attenuation = 1.0 / (max_boost_linear * safety_margin);
+        eq->input_attenuation = (int64_t)(attenuation * (1 << 28));
+        
+        printf("🔧 Auto Input Attenuation: %.2f dB (max boost: +%d dB)\n",
+               20.0 * log10(attenuation), max_db);
+    } else {
+        eq->input_attenuation = (int64_t)1 << 28;  // Unity (no attenuation)
+    }
+
+    // Makeup gain: DO NOT compensate for input attenuation
+    // Let overall loudness decrease to prevent clipping
+    // User can adjust volume manually if needed
+    eq->makeup_gain = (int64_t)1 << 28;  // Unity (no makeup gain)
+
+    // Reset states
+    memset(&eq->bass_l, 0, sizeof(biquad_state_t));
+    memset(&eq->bass_r, 0, sizeof(biquad_state_t));
+    memset(&eq->mid_l, 0, sizeof(biquad_state_t));
+    memset(&eq->mid_r, 0, sizeof(biquad_state_t));
+    memset(&eq->treble_l, 0, sizeof(biquad_state_t));
+    memset(&eq->treble_r, 0, sizeof(biquad_state_t));
+}
+
+void audio_eq_set_bass_freq(audio_eq_3band_t *eq, uint16_t freq_hz)
+{
+    if (!eq) return;
+    if (freq_hz < EQ_BASS_FREQ_MIN) freq_hz = EQ_BASS_FREQ_MIN;
+    if (freq_hz > EQ_BASS_FREQ_MAX) freq_hz = EQ_BASS_FREQ_MAX;
+
+    eq->bass_freq_hz = freq_hz;
+    compute_low_shelf(freq_hz, eq->bass_db, EQ_SAMPLE_RATE, &eq->bass_coeffs);
+
+    memset(&eq->bass_l, 0, sizeof(biquad_state_t));
+    memset(&eq->bass_r, 0, sizeof(biquad_state_t));
+}
+
+void audio_eq_set_sample_rate(audio_eq_3band_t *eq, uint32_t sample_rate)
+{
+    if (!eq || sample_rate == 0) return;
+
+    // Recompute coefficients
+    compute_low_shelf(eq->bass_freq_hz, eq->bass_db, sample_rate, &eq->bass_coeffs);
+    compute_peaking(eq->mid_freq_hz, eq->mid_db, sample_rate, &eq->mid_coeffs);
+    compute_high_shelf(eq->treble_freq_hz, eq->treble_db, sample_rate, &eq->treble_coeffs);
+
+    // Reinitialize limiter with new sample rate
+    limiter_cleanup(&eq->limiter);
+    limiter_init(&eq->limiter, sample_rate);
+
+    // Reset states
+    memset(&eq->bass_l, 0, sizeof(biquad_state_t));
+    memset(&eq->bass_r, 0, sizeof(biquad_state_t));
+    memset(&eq->mid_l, 0, sizeof(biquad_state_t));
+    memset(&eq->mid_r, 0, sizeof(biquad_state_t));
+    memset(&eq->treble_l, 0, sizeof(biquad_state_t));
+    memset(&eq->treble_r, 0, sizeof(biquad_state_t));
+}
+
+void audio_eq_process_stereo(audio_eq_3band_t *eq, int64_t *samples, size_t num_samples)
+{
+    if (!eq || !eq->enabled || !samples || num_samples < 2) return;
+
+    const bool do_bass = eq->bass_active;
+    const bool do_mid = eq->mid_active;
+    const bool do_treble = eq->treble_active;
+
+    const biquad_coeffs_t *cb = &eq->bass_coeffs;
+    const biquad_coeffs_t *cm = &eq->mid_coeffs;
+    const biquad_coeffs_t *ct = &eq->treble_coeffs;
+
+    num_samples &= ~(size_t)1;  // Ensure even number
+
+    for (size_t i = 0; i < num_samples; i += 2)
+    {
+        // Input is already int64
+        int64_t l = samples[i];
+        int64_t r = samples[i + 1];
+        
+        // Stage 0: Input Attenuation (create headroom for boost)
+        if (eq->input_attenuation != ((int64_t)1 << 28)) {
+            // Multi-step to avoid overflow: (l * input_attenuation) >> 28
+            l = (int64_t)((l >> 14) * (eq->input_attenuation >> 14));
+            r = (int64_t)((r >> 14) * (eq->input_attenuation >> 14));
+        }
+
+        /* Stage 1: EQ Processing (int64, no overflow) */
+        if (do_bass) {
+            l = biquad_process(cb, &eq->bass_l, l);
+            r = biquad_process(cb, &eq->bass_r, r);
+        }
+        if (do_mid) {
+            l = biquad_process(cm, &eq->mid_l, l);
+            r = biquad_process(cm, &eq->mid_r, r);
+        }
+        if (do_treble) {
+            l = biquad_process(ct, &eq->treble_l, l);
+            r = biquad_process(ct, &eq->treble_r, r);
+        }
+
+        /* Stage 2: Lookahead Limiter (AFTER EQ to control boosted signal) */
+        limiter_process(&eq->limiter, &l, &r, &l, &r);
+        
+        // Stage 3: Makeup Gain (restore overall loudness)
+        if (eq->makeup_gain != ((int64_t)1 << 28)) {
+            // Multi-step to avoid overflow: (l * makeup_gain) >> 28
+            l = (int64_t)((l >> 14) * (eq->makeup_gain >> 14));
+            r = (int64_t)((r >> 14) * (eq->makeup_gain >> 14));
+        }
+
+        /* Stage 4: Soft Clip (safety net) */
+        samples[i] = soft_clip(l);
+        samples[i + 1] = soft_clip(r);
+    }
+}
+
+void audio_eq_cleanup(audio_eq_3band_t *eq)
+{
+    if (!eq) return;
+    limiter_cleanup(&eq->limiter);
+}
+
+/* =========================================================================
+ * Adaptive Boost Limit Functions
+ * ========================================================================= */
+
+int8_t audio_eq_get_max_safe_boost(audio_eq_3band_t *eq, int32_t input_peak)
+{
+    if (!eq || input_peak <= 0) return 0;
+    
+    // Get limiter threshold (65% of INT32_MAX)
+    int64_t threshold = eq->limiter.threshold;
+    
+    // Calculate max gain before hitting threshold
+    // threshold = input_peak * gain
+    // gain = threshold / input_peak
+    double max_gain = (double)threshold / (double)input_peak;
+    
+    // Convert gain to dB
+    double max_db = 20.0 * log10(max_gain);
+    
+    // Clamp to valid range
+    if (max_db > EQ_MAX_DB) max_db = EQ_MAX_DB;
+    if (max_db < 0) max_db = 0;
+    
+    return (int8_t)max_db;
+}
+
+bool audio_eq_check_boost_safety(audio_eq_3band_t *eq, int8_t bass_db, int8_t mid_db, int8_t treble_db, int32_t input_peak)
+{
+    if (!eq) return false;
+    
+    // Get max safe boost
+    int8_t max_safe = audio_eq_get_max_safe_boost(eq, input_peak);
+    
+    // Check if any boost exceeds safe limit
+    bool safe = true;
+    
+    if (bass_db > max_safe) {
+        printf("⚠️  WARNING: Bass boost (+%d dB) exceeds safe limit (+%d dB) for input peak %ld\n",
+               bass_db, max_safe, input_peak);
+        safe = false;
+    }
+    
+    if (mid_db > max_safe) {
+        printf("⚠️  WARNING: Mid boost (+%d dB) exceeds safe limit (+%d dB) for input peak %ld\n",
+               mid_db, max_safe, input_peak);
+        safe = false;
+    }
+    
+    if (treble_db > max_safe) {
+        printf("⚠️  WARNING: Treble boost (+%d dB) exceeds safe limit (+%d dB) for input peak %ld\n",
+               treble_db, max_safe, input_peak);
+        safe = false;
+    }
+    
+    if (safe) {
+        printf("✅ All boost levels are safe for input peak %ld (max safe: +%d dB)\n",
+               input_peak, max_safe);
+    }
+    
+    return safe;
+}

@@ -1,0 +1,102 @@
+/**
+ * @file audio_eq.h
+ * @brief 3-Band Parametric EQ with Professional Dynamic Range Management
+ */
+
+#ifndef AUDIO_EQ_H
+#define AUDIO_EQ_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+/* Configuration */
+#define EQ_Q_FORMAT 28
+#define EQ_SAMPLE_RATE 44100
+#define EQ_MIN_DB -12
+#define EQ_MAX_DB 24
+#define EQ_DB_STEPS 37  // -12 to +24 dB
+
+#define EQ_DEFAULT_BASS_HZ 100
+#define EQ_DEFAULT_MID_HZ 1000
+#define EQ_DEFAULT_TREBLE_HZ 8000
+
+#define EQ_BASS_FREQ_MIN 20
+#define EQ_BASS_FREQ_MAX 500
+
+/* Data types */
+typedef struct {
+    int32_t b0, b1, b2, a1, a2;
+} biquad_coeffs_t;
+
+typedef struct {
+    int64_t x1, x2;
+    int64_t y1, y2;
+} biquad_state_t;
+
+/* Lookahead Limiter */
+typedef struct {
+    int64_t *delay_buffer_l;
+    int64_t *delay_buffer_r;
+    int32_t delay_write_idx;
+    int32_t delay_length;
+    
+    int64_t envelope;
+    int64_t gain;
+    
+    // Parameters
+    int64_t threshold;      // Q28
+    int64_t attack_coeff;   // Q28
+    int64_t release_coeff;  // Q28
+    int64_t lookahead_ms;
+} lookahead_limiter_t;
+
+/* Main EQ structure */
+typedef struct {
+    // Coefficients (runtime computed)
+    biquad_coeffs_t bass_coeffs;
+    biquad_coeffs_t mid_coeffs;
+    biquad_coeffs_t treble_coeffs;
+    
+    // State
+    biquad_state_t bass_l, bass_r;
+    biquad_state_t mid_l, mid_r;
+    biquad_state_t treble_l, treble_r;
+    
+    // Settings
+    uint16_t bass_freq_hz;
+    uint16_t mid_freq_hz;
+    uint16_t treble_freq_hz;
+    int8_t bass_db;
+    int8_t mid_db;
+    int8_t treble_db;
+    
+    // Flags
+    bool enabled;
+    bool bass_active;
+    bool mid_active;
+    bool treble_active;
+    
+    // Dynamic Range Management
+    lookahead_limiter_t limiter;
+    int64_t makeup_gain;  // Q28
+    
+    // Auto Input Attenuation (NEW)
+    int64_t input_attenuation;  // Q28 - auto-calculated based on max boost
+    int32_t max_boost_db;       // Track max boost for attenuation calculation
+    
+} audio_eq_3band_t;
+
+/* API */
+void audio_eq_init(audio_eq_3band_t *eq);
+void audio_eq_set_params(audio_eq_3band_t *eq, int8_t bass_db, int8_t mid_db, int8_t treble_db);
+void audio_eq_set_bass_freq(audio_eq_3band_t *eq, uint16_t freq_hz);
+void audio_eq_set_sample_rate(audio_eq_3band_t *eq, uint32_t sample_rate);
+void audio_eq_process_stereo(audio_eq_3band_t *eq, int64_t *samples, size_t num_samples);
+void audio_eq_cleanup(audio_eq_3band_t *eq);
+
+/* Adaptive Boost Limit Functions */
+int8_t audio_eq_get_max_safe_boost(audio_eq_3band_t *eq, int32_t input_peak);
+bool audio_eq_check_boost_safety(audio_eq_3band_t *eq, int8_t bass_db, int8_t mid_db, int8_t treble_db, int32_t input_peak);
+
+#endif // AUDIO_EQ_H
