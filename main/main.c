@@ -770,10 +770,10 @@ void app_main(void) {
     xSemaphoreGive(s_draw_done_sem); // อนุญาตให้วาดเฟรมแรกได้ทันที
 
     // ลงทะเบียน Event Callback เข้ากับ DPI Panel
-    esp_lcd_dpi_panel_event_callbacks_t cbs = {
-        .on_color_trans_done = on_color_trans_done_cb,
-    };
-    ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, NULL));
+    //esp_lcd_dpi_panel_event_callbacks_t cbs = {
+    //    .on_color_trans_done = on_color_trans_done_cb,
+    //};
+    //ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, NULL));
 
     // 1. เริ่มระบบ I2C Master Bus (IDF v6.x Driver)
     i2c_master_bus_config_t i2c_bus_config = {
@@ -799,7 +799,7 @@ void app_main(void) {
 
     // 3. เปิดเพาเวอร์แอมป์ขับลำโพง
     bsp_enable_speaker_pa();
-/*
+
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle = panel_handle,
         .buffer_size = LCD_H_RES * LCD_V_RES,
@@ -834,7 +834,7 @@ void app_main(void) {
     if(lvgl_port_lock(1000)){
       lv_demo_widgets();
     }
-    lvgl_port_unlock();*/
+    lvgl_port_unlock();
 
 vTaskDelay(pdMS_TO_TICKS(3000));
 
@@ -903,16 +903,4 @@ vTaskDelay(pdMS_TO_TICKS(3000));
     xTaskCreate(console_task, "cli_task", 4096, NULL, 3, NULL);
 
     return;
-
-/*
-    init_lvgl_display(panel_handle);
-
-    //create_demo_ui();
-    
-
-    xTaskCreate(lvgl_task, "lvgl", 16384, NULL, 6, NULL);
-
-    while(1){
-      vTaskDelay(pdMS_TO_TICKS(5));
-    }*/
 }

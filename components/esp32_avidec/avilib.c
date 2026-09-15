@@ -1445,6 +1445,12 @@ int AVI_read_data(avi_t *AVI, char *vidbuf, long max_vidbuf,
 
         payload = AVI->pos + 8;
         AVI->pos += 8 + pad2(sz);
+        /* [เพิ่ม] chunk ขนาด 0 (muxer บางตัวใช้เป็น marker/padding) ไม่ใช่เฟรมจริง:
+           ข้าม ไม่นับเป็นเฟรม และไม่ส่งบัฟเฟอร์ยาว 0 ให้ผู้เรียก (เดิมนับเป็นเฟรม -> เพี้ยน)
+           (pos ถูกเลื่อนไปแล้วด้านบน จึงข้ามได้ปลอดภัย ไม่วนซ้ำ) */
+        if (sz == 0)
+            continue;
+
 
         if (is_video_chunk(AVI, id)) {
             if (len) *len = (long)sz;
@@ -1500,6 +1506,74 @@ int AVI_retry_last_chunk(avi_t *AVI)
         AVI->video_pos--;
     AVI->retry_pos = 0;
     return 0;
+}
+
+int AVI_sample_chunk_stats_at(avi_t *AVI, avi_off_t start, avi_off_t end, int n,
+                              uint32_t *avg_video, uint32_t *avg_audio, int *nv_out, int *na_out)
+{
+    if (!AVI || n <= 0 || start + 8 > end)
+        return -1;
+
+    avi_off_t save_pos = AVI->pos;
+    avi_off_t save_start = AVI->movi_start, save_end = AVI->movi_end;
+    long      save_vpos = AVI->video_pos;
+    uint64_t  sum_v = 0, sum_a = 0;
+    int       nv = 0, na = 0, i;
+
+    AVI->movi_start = start;
+    AVI->movi_end   = end;
+    AVI->pos        = start;
+    AVI->buf_off = AVI->buf_len = 0;
+
+    for (i = 0; i < n; i++) {
+        uint32_t id, sz;
+        if (AVI->pos + 8 > AVI->movi_end)
+            break;
+        if (!peek_hdr(AVI, &id, &sz))
+            break;
+        if (id == TAG_LIST) { AVI->pos += 12; continue; }
+        if (id == FCC4('r','e','c',' ')) { AVI->pos += 8; continue; }
+        AVI->pos += 8 + pad2(sz);              /* ข้าม payload (ไม่ต้องอ่านข้อมูลจริง) */
+        if (sz == 0)
+            continue;
+
+        if (is_video_chunk(AVI, id)) {
+            sum_v += (uint64_t)sz + 8; nv++;
+        } else if ((id >> 16) == HI_WB) {
+            int t;
+            for (t = 0; t < AVI->anum; t++) {
+                uint32_t tag = FCC4((uint8_t)AVI->track[t].audio_tag[0],
+                                    (uint8_t)AVI->track[t].audio_tag[1],
+                                    (uint8_t)AVI->track[t].audio_tag[2],
+                                    (uint8_t)AVI->track[t].audio_tag[3]);
+                if (id == tag) { sum_a += (uint64_t)sz + 8; na++; break; }
+            }
+        }
+    }
+
+    /* คืนสภาพทุกอย่าง (ผู้เรียกทำงานต่อจากเดิมได้) */
+    AVI->movi_start = save_start;
+    AVI->movi_end   = save_end;
+    AVI->pos        = save_pos;
+    AVI->video_pos  = save_vpos;
+    AVI->retry_pos  = 0;
+    AVI->buf_off = AVI->buf_len = 0;
+    f_lseek(&AVI->fil, (FSIZE_t)AVI->pos);
+
+    if (avg_video) *avg_video = nv ? (uint32_t)(sum_v / (uint64_t)nv) : 0;
+    if (avg_audio) *avg_audio = na ? (uint32_t)(sum_a / (uint64_t)na) : 0;
+    if (nv_out) *nv_out = nv;
+    if (na_out) *na_out = na;
+    return nv + na;
+}
+
+/* สุ่มจาก "ตำแหน่งปัจจุบัน" (ครอบ AVI_sample_chunk_stats_at อีกชั้น) */
+int AVI_sample_chunk_stats(avi_t *AVI, int n, uint32_t *avg_video, uint32_t *avg_audio,
+                           int *nv, int *na)
+{
+    if (!AVI) return -1;
+    return AVI_sample_chunk_stats_at(AVI, AVI->pos, AVI->movi_end, n,
+                                     avg_video, avg_audio, nv, na);
 }
 
 int AVI_seek_start(avi_t *AVI)

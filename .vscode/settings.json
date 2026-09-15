@@ -13,5 +13,5 @@
     "--compile-commands-dir=c:\\Users\\peter\\esp32p4_test\\build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM27"
+  "idf.portWin": "COM26"
 }
