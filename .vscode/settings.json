@@ -13,5 +13,6 @@
     "--compile-commands-dir=c:\\Users\\peter\\esp32p4_test\\build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM26"
+  "idf.portWin": "COM26",
+  "C_Cpp.errorSquiggles": "disabled"
 }

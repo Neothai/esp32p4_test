@@ -18,6 +18,6 @@ dependencies:
   espressif/esp_hosted: ^3.0.7
   espressif/esp_lcd_ek79007: ^2.0.2~1
   espressif/esp_lvgl_port: ^2.9.0
-  lvgl/lvgl: ^9.5.0
   espressif/esp_lcd_touch_gt911: ^1.2.1
   espressif/esp_lcd_touch: ^1.2.1
+  lvgl/lvgl: ^9.6.0

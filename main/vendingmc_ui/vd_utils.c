@@ -1,0 +1,148 @@
+#include "vd_utils.h"
+
+/* ตาราง Lookup Table 256 ค่า (0xFF = ตัวอักษรที่ไม่ถูกต้อง) */
+static const uint8_t b64_lut[256] = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3E, 0xFF, 0xFF, 0xFF, 0x3F, // 0x2B='+', 0x2F='/'
+    0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, // 0x30-0x39='0'-'9', 0x3D='='
+    0xFF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, // 0x41-0x4F='A'-'O'
+    0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x50-0x5A='P'-'Z'
+    0xFF, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, // 0x61-0x6F='a'-'o'
+    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 0x70-0x7A='p'-'z'
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
+/**
+ * @brief ถอดรหัส Base64 Data URI เป็น Binary Buffer
+ * @param input สตริง Base64 หรือ Data URI
+ * @param out_len พอยน์เตอร์สำหรับรับขนาดไบต์จริงของไฟล์ที่ถอดรหัสได้
+ * @return uint8_t* บัฟเฟอร์ข้อมูลไบนารี (ต้อง free/lv_free เมื่อใช้งานเสร็จ) หรือ NULL หากล้มเหลว
+ */
+uint8_t *vd_base64_decode(const char * input, size_t * out_len) {
+    if(!input || !out_len) return NULL;
+
+    ESP_LOGI("BASE64", "Start!");
+    uint64_t t0 = esp_timer_get_time();
+
+    // 1. ตัด Prefix "data:image/...;base64," ออกอัตโนมัติ
+    const char * data_ptr = strchr(input, ',');
+    if(data_ptr) {
+        data_ptr++; // ขยับข้ามเครื่องหมายจุลภาคไปที่เนื้อ Base64 แท้ๆ
+    } else {
+        data_ptr = input;
+    }
+
+    size_t in_len = strlen(data_ptr);
+    if(in_len == 0) return NULL;
+
+    // 2. คำนวณขนาดเอาต์พุตสูงสุดที่ต้องใช้ (4 Base64 chars -> 3 Binary bytes)
+    size_t max_out_len = (in_len / 4) * 3 + 3;
+    uint8_t * out_buf = (uint8_t *)malloc(max_out_len);
+    if(!out_buf) return NULL;
+
+    uint8_t * out = out_buf;
+    const uint8_t * src = (const uint8_t *)data_ptr;
+    const uint8_t * end = src + in_len;
+
+    // 3. Loop ถอดรหัสทีละ 4 อักขระ -> 3 ไบต์
+    while(src + 4 <= end) {
+        // ข้ามช่องว่างหรือ Newline ที่อาจปนมา
+        if(*src <= 0x20) { src++; continue; }
+
+        uint8_t c0 = b64_lut[src[0]];
+        uint8_t c1 = b64_lut[src[1]];
+        uint8_t c2 = b64_lut[src[2]];
+        uint8_t c3 = b64_lut[src[3]];
+
+        // รวมค่า Bitwise เข้า 32-bit Register
+        uint32_t triple = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+
+        // ถอดรหัส 2 ไบต์แรกเสมอ
+        *out++ = (triple >> 16) & 0xFF;
+
+        // ตรวจสอบ Padding '='
+        if(src[2] == '=') {
+            src += 4;
+            break;
+        }
+        *out++ = (triple >> 8) & 0xFF;
+
+        if(src[3] == '=') {
+            src += 4;
+            break;
+        }
+        *out++ = triple & 0xFF;
+
+        src += 4;
+    }
+
+    *out_len = (size_t)(out - out_buf);
+
+    uint64_t t1 = esp_timer_get_time();
+    ESP_LOGI("BASE64", "End! take %llu us", (t1 - t0));
+
+    return out_buf;
+}
+
+void vd_format_price_raw(float value, char *buffer, bool need_fraction) {
+    if (!buffer) return;
+
+    // 1. แปลง float เป็นสตริงทศนิยม 2 ตำแหน่ง เพื่อให้ระบบปัดเศษทางคณิตศาสตร์ถูกต้อง
+    char raw[32];
+    snprintf(raw, sizeof(raw), "%.2f", value);
+
+    // 2. ตรวจสอบว่ามีเศษทศนิยมที่ไม่ใช่ .00 หรือไม่
+    char *dot = strchr(raw, '.');
+    bool has_fraction = false;
+    if ((dot && strcmp(dot, ".00") != 0) || need_fraction) {
+        has_fraction = true;
+    }
+
+    // 3. จัดการเครื่องหมายลบ (ถ้ามี)
+    const char *digits = raw;
+    char *out = buffer;
+    if (*digits == '-') {
+        *out++ = '-';
+        digits++;
+    }
+
+    // คำนวณความยาวเฉพาะส่วนจำนวนเต็ม
+    int int_len = dot ? (int)(dot - digits) : (int)strlen(digits);
+
+    // 4. วนลูปคัดลอกตัวเลขจำนวนเต็ม พร้อมแทรกคอมม่าทุก 3 หลัก
+    for (int i = 0; i < int_len; i++) {
+        if (i > 0 && (int_len - i) % 3 == 0) {
+            *out++ = ',';
+        }
+        *out++ = digits[i];
+    }
+
+    // 5. ต่อท้ายด้วยทศนิยม (เฉพาะกรณีที่ไม่ใช่ .00)
+    if (has_fraction && dot) {
+        strcpy(out, dot);
+    } else {
+        *out = '\0';
+    }
+}
+
+
+void vd_format_price(float value, char *buffer) {
+  vd_format_price_raw(value, buffer, false);
+}
+
+void vd_ms_to_time(uint64_t ms, vd_time_t *time){
+  if(!time) return;
+
+  time->h   = (uint32_t)(ms / 3600000ULL);
+  time->m   = (uint32_t)((ms / 60000ULL) % 60ULL);
+  time->s   = (uint32_t)((ms / 1000ULL) % 60ULL);
+  time->ms  = (uint32_t)(ms % 1000ULL);
+}
