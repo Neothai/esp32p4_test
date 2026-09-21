@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <title>Kiosk PromptPay Dialog - Slot Options</title>
+  <link href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Anuphan', sans-serif;
+      user-select: none;
+    }
+
+    body {
+      background: #090d16;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      gap: 18px;
+    }
+
+    /* จอ 1024x600 ของ ESP32-P4 */
+    .screen {
+      width: 1024px;
+      height: 600px;
+      background: #0f172a;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      border-radius: 8px;
+      box-shadow: 0 30px 80px -20px rgba(0,0,0,0.8);
+    }
+
+    .backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.65);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* กล่อง Modal แนวนอน */
+    .modal-dialog {
+      width: 680px;
+      height: 410px;
+      background: #ffffff;
+      border-radius: 24px;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.28);
+    }
+
+    .btn-close {
+      position: absolute;
+      top: 16px;
+      right: 18px;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #f1f5f9;
+      color: #94a3b8;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 16px;
+      cursor: pointer;
+      z-index: 10;
+    }
+
+    /* ============================================================
+       ฝั่งซ้าย: คงตำแหน่งเดิมของกรอบสีเขียวไว้ 100%
+       ============================================================ */
+    .col-left {
+      flex: 1.25;
+      padding: 32px 30px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-right: 1px solid #f1f5f9;
+    }
+
+    /* --- ส่วนในกรอบสีเขียวเดิม (ห้ามเคลื่อนย้าย) --- */
+    .green-zone {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .amount-section {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .topic-label {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: #64748b;
+    }
+    .amount-value {
+      font-size: 38px;
+      font-weight: 700;
+      color: #0f172a;
+      letter-spacing: -0.5px;
+      line-height: 1.1;
+      font-feature-settings: "tnum";
+    }
+
+    .txn-details-box {
+      background: #f8fafc;
+      border: 1px solid #edf2f7;
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .txn-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .txn-label { color: #64748b; font-weight: 500; }
+    .txn-val { color: #1e293b; font-weight: 600; }
+    .txn-val.mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+    .banks-supported-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .banks-title {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: #64748b;
+      letter-spacing: 0.2px;
+    }
+    .banks-icon-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .bank-badge {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-weight: 700;
+      font-size: 10.5px;
+      color: #ffffff;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+    }
+    .bank-kbank { background: #138f2d; }
+    .bank-scb   { background: #4e2a84; }
+    .bank-ktb   { background: #00a8e7; }
+    .bank-bbl   { background: #1e3f8a; }
+    .bank-bay   { background: #fdb913; color: #3e2b00; }
+    .bank-ttb   { background: #0050f0; }
+    .banks-all-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      margin-left: 2px;
+    }
+
+    /* ============================================================
+       พื้นที่ว่างด้านล่าง: จุดที่ใส่ Widget แทนที่ตัวกากบาท
+       ============================================================ */
+    .replacement-slot {
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+    }
+
+    /* --- แบบที่ 1: แถบนับเวลาแบบ Minimal Capsule --- */
+    .opt-timer {
+      width: 100%;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .timer-top-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .timer-caption {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #475569;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .timer-nums {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 15px;
+      font-weight: 700;
+      color: #5B6EF5;
+    }
+    .timer-line-track {
+      width: 100%;
+      height: 4px;
+      background: #f1f5f9;
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+    .timer-line-bar {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      width: 70%;
+      background: #5B6EF5;
+      border-radius: 999px;
+    }
+
+    /* --- แบบที่ 2: ขั้นตอนการซื้อ 3 สเต็ป (3-Step Guide) --- */
+    .opt-steps {
+      width: 100%;
+      background: #f8fafc;
+      border: 1px solid #edf2f7;
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .step-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      color: #475569;
+      font-weight: 600;
+    }
+    .step-num {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #5B6EF5;
+      color: #ffffff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .step-arrow {
+      color: #cbd5e1;
+      font-size: 11px;
+    }
+
+    /* --- แบบที่ 3: ระบบความปลอดภัย & ซัพพอร์ต --- */
+    .opt-support {
+      width: 100%;
+      background: #f8fafc;
+      border: 1px solid #edf2f7;
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .support-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .shield-ico {
+      color: #059669;
+      display: flex;
+      align-items: center;
+    }
+    .support-text {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .support-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #1e293b;
+    }
+    .support-sub {
+      font-size: 10.5px;
+      color: #64748b;
+    }
+    .support-phone {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: #5B6EF5;
+      background: #eef2ff;
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+
+    /* ============================================================
+       ฝั่งขวา: โลโก้ PromptPay และกรอบแสดง QR
+       ============================================================ */
+    .col-right {
+      flex: 0.95;
+      background: #ffffff;
+      padding: 32px 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    .promptpay-logo {
+      width: 175px;
+      height: 58px;
+    }
+
+    .qr-viewport {
+      width: 190px;
+      height: 190px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .qr-loading-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      width: 100%;
+      height: 100%;
+      background: #f8fafc;
+      border-radius: 12px;
+    }
+    .loading-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #64748b;
+    }
+
+    .track {
+      width: 130px;
+      height: 6px;
+      background: #e2e8f0;
+      border-radius: 9999px;
+      position: relative;
+      overflow: hidden;
+    }
+    .indicator {
+      position: absolute;
+      height: 100%;
+      background: #5B6EF5;
+      border-radius: 9999px;
+      animation: smooth-run 1.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+    }
+    @keyframes smooth-run {
+      0% { left: 0%; width: 0%; }
+      50% { left: 20%; width: 60%; }
+      100% { left: 100%; width: 0%; }
+    }
+
+    .qr-image-state {
+      display: none;
+      width: 100%;
+      height: 100%;
+    }
+    .qr-image-state img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border-radius: 4px;
+    }
+
+    .is-ready .qr-loading-state { display: none; }
+    .is-ready .qr-image-state { display: block; }
+
+    /* คอนโทรลแผงปุ่มทดสอบ */
+    .control-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 10px;
+    }
+    .dev-btn {
+      padding: 9px 18px;
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+    .dev-btn.active {
+      background: #5B6EF5;
+      border-color: #5B6EF5;
+    }
+    .dev-btn:hover:not(.active) {
+      background: #334155;
+    }
+  </style>
+</head>
+<body>
+
+<div class="screen">
+  <div class="backdrop">
+    <div class="modal-dialog" id="paymentDialog">
+      <div class="btn-close">✕</div>
+
+      <!-- คอลัมน์ซ้าย -->
+      <div class="col-left">
+        <!-- โซนในกรอบสีเขียวเดิม (คงไว้ทุกประการตามที่กำหนด) -->
+        <div class="green-zone">
+          <div class="amount-section">
+            <div class="topic-label">ยอดชำระเงินทั้งหมด</div>
+            <div class="amount-value">฿200.00</div>
+          </div>
+
+          <div class="txn-details-box">
+            <div class="txn-row">
+              <span class="txn-label">หมายเลขรายการ</span>
+              <span class="txn-val mono">#TXN-20260920-04</span>
+            </div>
+            <div class="txn-row">
+              <span class="txn-label">จำนวนสินค้าในตะกร้า</span>
+              <span class="txn-val">2 รายการ</span>
+            </div>
+            <div class="txn-row">
+              <span class="txn-label">ช่องทางชำระเงิน</span>
+              <span class="txn-val">QR พร้อมเพย์</span>
+            </div>
+          </div>
+
+          <div class="banks-supported-section">
+            <div class="banks-title">รองรับ Mobile Banking ทุกธนาคาร</div>
+            <div class="banks-icon-row">
+              <div class="bank-badge bank-kbank">K</div>
+              <div class="bank-badge bank-scb">SCB</div>
+              <div class="bank-badge bank-ktb">KTB</div>
+              <div class="bank-badge bank-bbl">BBL</div>
+              <div class="bank-badge bank-bay">BAY</div>
+              <div class="bank-badge bank-ttb">ttb</div>
+              <span class="banks-all-label">และอื่นๆ</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ช่องด้านล่างที่ใส่ของใหม่แทนตัวกากบาท -->
+        <div class="replacement-slot" id="slotContainer">
+          <!-- เนื้อหาจะถูกสลับด้วย JavaScript ตามปุ่มกดด้านล่าง -->
+        </div>
+      </div>
+
+      <!-- คอลัมน์ขวา: โลโก้ PromptPay และ QR Code -->
+      <div class="col-right">
+        <div class="promptpay-logo">
+          <svg viewBox="0 0 200 67" width="100%" height="100%">
+            <rect x="1" y="1" width="198" height="65" fill="#ffffff" stroke="#0b3860" stroke-width="2"/>
+            <rect x="11" y="18" width="108" height="34" fill="#0b3860"/>
+            <text x="17" y="44" font-family="'Anuphan', sans-serif" font-weight="700" font-size="28" fill="#ffffff">Prompt</text>
+            <text x="123" y="44" font-family="'Anuphan', sans-serif" font-weight="700" font-size="32" fill="#0b3860">Pay</text>
+            <text x="123" y="15" font-family="'Anuphan', sans-serif" font-weight="600" font-size="14" fill="#0b3860">พร้อมเพย์</text>
+          </svg>
+        </div>
+
+        <div class="qr-viewport">
+          <div class="qr-loading-state">
+            <div class="loading-title">กำลังโหลด...</div>
+            <div class="track">
+              <div class="indicator"></div>
+            </div>
+          </div>
+
+          <div class="qr-image-state">
+            <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='white'/><path d='M10 10h30v30h-30zM60 10h30v30h-30zM10 60h30v30h-30zM20 20h10v10h-10zM70 20h10v10h-10zM20 70h10v10h-10zM50 20h5v15h-5zM60 60h10v10h-10zM80 60h10v20h-10zM50 75h15v15h-15zM70 80h10v10h-10z' fill='black'/></svg>" alt="PromptPay QR">
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- คอนโทรลเลือกสไตล์เพื่อทดสอบ -->
+<div class="control-panel">
+  <div class="btn-group">
+    <button class="dev-btn active" onclick="setSlotOption(1)">แบบที่ 1: แถบเวลาชำระเงิน (Minimal Timer)</button>
+    <button class="dev-btn" onclick="setSlotOption(2)">แบบที่ 2: ขั้นตอนการซื้อ 3 สเต็ป (Step Guide)</button>
+    <button class="dev-btn" onclick="setSlotOption(3)">แบบที่ 3: รับประกันความปลอดภัย & เบอร์ติดต่อ</button>
+  </div>
+  <div class="btn-group">
+    <button class="dev-btn" style="background: #334155;" onclick="toggleQrState()">⚡ สลับสถานะ QR: โหลดเสร็จ / กำลังโหลด</button>
+  </div>
+</div>
+
+<script>
+  // แม่แบบ HTML ทั้ง 3 รูปแบบ
+  const optionTemplates = {
+    1: `
+      <div class="opt-timer">
+        <div class="timer-top-row">
+          <span class="timer-caption">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            เวลาชำระเงินที่เหลือ
+          </span>
+          <span class="timer-nums">02:00</span>
+        </div>
+        <div class="timer-line-track">
+          <div class="timer-line-bar"></div>
+        </div>
+      </div>
+    `,
+    2: `
+      <div class="opt-steps">
+        <div class="step-item"><span class="step-num">1</span> สแกน QR</div>
+        <span class="step-arrow">➔</span>
+        <div class="step-item"><span class="step-num">2</span> ยืนยันยอด</div>
+        <span class="step-arrow">➔</span>
+        <div class="step-item"><span class="step-num">3</span> รับสินค้า</div>
+      </div>
+    `,
+    3: `
+      <div class="opt-support">
+        <div class="support-left">
+          <span class="shield-ico">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+          </span>
+          <div class="support-text">
+            <span class="support-title">ชำระเงินปลอดภัย มาตรฐาน ธปท.</span>
+            <span class="support-sub">พบปัญหาแจ้งรหัสรายการ</span>
+          </div>
+        </div>
+        <span class="support-phone">โทร 02-123-4567</span>
+      </div>
+    `
+  };
+
+  function setSlotOption(optIndex) {
+    document.getElementById('slotContainer').innerHTML = optionTemplates[optIndex];
+    
+    // อัปเดตสถานะปุ่ม Active
+    const buttons = document.querySelectorAll('.control-panel .btn-group:first-child .dev-btn');
+    buttons.forEach((btn, idx) => {
+      btn.classList.toggle('active', idx === (optIndex - 1));
+    });
+  }
+
+  let isQrLoaded = false;
+  function toggleQrState() {
+    isQrLoaded = !isQrLoaded;
+    document.getElementById('paymentDialog').classList.toggle('is-ready', isQrLoaded);
+  }
+
+  // กำหนดค่าเริ่มต้นเป็นแบบที่ 1
+  setSlotOption(1);
+</script>
+
+</body>
+</html>

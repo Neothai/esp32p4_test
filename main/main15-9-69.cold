@@ -107,6 +107,8 @@ static size_t                s_out_pixel_bytes = 0;
 static int                   s_x_start = 0;
 static int                   s_y_start = 0;
 
+lv_obj_t *video_frame, *slider, *slider_time, *play_pause_btn, *play_pause_btn_txt;
+
 esp_err_t display_jpeg_direct(esp_lcd_panel_handle_t panel, const char *file_path);
 
 /* ── ฟังก์ชันเปิดไฟ Backlight ───────────────────────────────────── */
@@ -186,6 +188,21 @@ static bool on_color_trans_done_cb(esp_lcd_panel_handle_t panel,
     BaseType_t need_yield = pdFALSE;
     xSemaphoreGiveFromISR(s_draw_done_sem, &need_yield);
     return (need_yield == pdTRUE);
+}
+
+void video_ui_init(){
+  video_frame = lv_image_create(lv_screen_active());
+  lv_obj_center(video_frame);
+  
+  slider = lv_slider_create(lv_screen_active());
+  lv_slider_set_range(slider, 0, 1);
+  lv_obj_set_width(slider, 800);
+  lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -50);
+  
+  slider_time = lv_label_create(lv_screen_active());
+  lv_label_set_text_fmt(slider_time, "%d:%d", lv_slider_get_value(slider), lv_slider_get_max_value(slider));
+  lv_obj_align(slider_time, LV_ALIGN_OUT_RIGHT_MID, 15, 0);
+  // *play_pause_btn, *play_pause_btn_txt
 }
 
 static bool is_jpeg_file(const char *filename)
@@ -770,10 +787,10 @@ void app_main(void) {
     xSemaphoreGive(s_draw_done_sem); // อนุญาตให้วาดเฟรมแรกได้ทันที
 
     // ลงทะเบียน Event Callback เข้ากับ DPI Panel
-    esp_lcd_dpi_panel_event_callbacks_t cbs = {
-        .on_color_trans_done = on_color_trans_done_cb,
-    };
-    ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, NULL));
+    //esp_lcd_dpi_panel_event_callbacks_t cbs = {
+    //    .on_color_trans_done = on_color_trans_done_cb,
+    //};
+    //ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &cbs, NULL));
 
     // 1. เริ่มระบบ I2C Master Bus (IDF v6.x Driver)
     i2c_master_bus_config_t i2c_bus_config = {
@@ -799,7 +816,7 @@ void app_main(void) {
 
     // 3. เปิดเพาเวอร์แอมป์ขับลำโพง
     bsp_enable_speaker_pa();
-/*
+
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle = panel_handle,
         .buffer_size = LCD_H_RES * LCD_V_RES,
@@ -832,9 +849,9 @@ void app_main(void) {
     setup_touchscreen(display);
 
     if(lvgl_port_lock(1000)){
-      lv_demo_widgets();
+      video_ui_init();
     }
-    lvgl_port_unlock();*/
+    lvgl_port_unlock();
 
 vTaskDelay(pdMS_TO_TICKS(3000));
 
@@ -903,16 +920,4 @@ vTaskDelay(pdMS_TO_TICKS(3000));
     xTaskCreate(console_task, "cli_task", 4096, NULL, 3, NULL);
 
     return;
-
-/*
-    init_lvgl_display(panel_handle);
-
-    //create_demo_ui();
-    
-
-    xTaskCreate(lvgl_task, "lvgl", 16384, NULL, 6, NULL);
-
-    while(1){
-      vTaskDelay(pdMS_TO_TICKS(5));
-    }*/
 }

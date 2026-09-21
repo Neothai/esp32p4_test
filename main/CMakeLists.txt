@@ -1,8 +1,12 @@
+file(GLOB_RECURSE APP_SOURCES 
+    "vendingmc_ui/*.c"
+    "vendingmc_ui/fonts/*.c"
+    "*.c"             # รวมไฟล์ .c ที่อยู่ใน main/ ด้วย
+)
+
 idf_component_register(
     SRCS 
-        "main.c"
-        "esp32_wifi.c"
-        "es8311.c"
+       SRCS ${APP_SOURCES}
     INCLUDE_DIRS 
         "."
     REQUIRES
@@ -37,16 +41,12 @@ idf_component_register(
         lvgl
 )
 
-# Patch บังคับ Link SDMMC ให้ esp_hosted บน ESP-IDF v6
-#if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
-#    idf_component_get_property(esp_hosted_lib espressif__esp_hosted COMPONENT_LIB)
-#    idf_component_get_property(sdmmc_driver_lib esp_driver_sdmmc COMPONENT_LIB)
-#    if(TARGET ${esp_hosted_lib})
-#        get_target_property(lib_type ${esp_hosted_lib} TYPE)
-#        if(lib_type STREQUAL "INTERFACE_LIBRARY")
-#            target_link_libraries(${esp_hosted_lib} INTERFACE ${sdmmc_driver_lib})
-#        else()
-#            target_link_libraries(${esp_hosted_lib} PRIVATE ${sdmmc_driver_lib})
-#        endif()
-#    endif()
+#idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+#if(TARGET ${lvgl_lib})
+#    target_include_directories(${lvgl_lib} PRIVATE 
+#        "${IDF_PATH}/components/esp_driver_ppa/include"
+#        "${IDF_PATH}/components/esp_mm/include"
+#        "${IDF_PATH}/components/esp_hw_support/include"
+#    )
+#    target_link_libraries(${lvgl_lib} PRIVATE idf::esp_driver_ppa idf::esp_mm)
 #endif()
