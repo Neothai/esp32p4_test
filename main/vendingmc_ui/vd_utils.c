@@ -25,6 +25,7 @@ static const uint8_t b64_lut[256] = {
  * @param input สตริง Base64 หรือ Data URI
  * @param out_len พอยน์เตอร์สำหรับรับขนาดไบต์จริงของไฟล์ที่ถอดรหัสได้
  * @return uint8_t* บัฟเฟอร์ข้อมูลไบนารี (ต้อง free/lv_free เมื่อใช้งานเสร็จ) หรือ NULL หากล้มเหลว
+ * @note อย่าลืม free() ด้วยตัวเอง เพราะมัน malloc() ให้ แต่ไม่ได้ free ให้
  */
 uint8_t *vd_base64_decode(const char * input, size_t * out_len) {
     if(!input || !out_len) return NULL;

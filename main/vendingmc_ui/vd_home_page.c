@@ -1,5 +1,20 @@
 #include "vd_home_page.h"
 
+static lv_style_t s_spdb_btn_style;
+static bool s_spdb_style_inited = false;
+
+static void _init_spdb_style_once(void) {
+    if (s_spdb_style_inited) return;
+    lv_style_init(&s_spdb_btn_style);
+    lv_style_set_bg_color(&s_spdb_btn_style, lv_color_hex(0xF0F1F7));
+    lv_style_set_border_opa(&s_spdb_btn_style, LV_OPA_TRANSP);
+    lv_style_set_shadow_opa(&s_spdb_btn_style, LV_OPA_TRANSP);
+    lv_style_set_radius(&s_spdb_btn_style, 10);
+    lv_style_set_pad_all(&s_spdb_btn_style, 0);
+    lv_style_set_size(&s_spdb_btn_style, 30, 30);
+    s_spdb_style_inited = true;
+}
+
 /* 1. เริ่มต้นโครงสร้าง */
 void vd_cart_list_init(vd_cart_list_t *list) {
     list->items = NULL;
@@ -85,10 +100,6 @@ void _vd_set_cart_empty_txt_enable(vd_home_page_t *hp, bool enable){
 }
 
 static void _vd_cart_item_final_delete_cb(lv_anim_t * a) {
-  lv_obj_t * wrapper = (lv_obj_t *)a->var;
-  lv_obj_delete_async(wrapper); // ลบทั้ง Wrapper (รวมทั้งแถบแดงและตัวสินค้า)
-  wrapper = NULL;
-
   vd_cart_item_t *item = (vd_cart_item_t*)lv_anim_get_user_data(a);
   vd_home_page_t *hp = item->hp;
 
@@ -168,26 +179,20 @@ vd_spinbox_t *vd_spinbox_create(lv_obj_t *parant, uint16_t width, uint16_t heigh
 
   spdb->main = lv_obj_create(parant);
 
+  _init_spdb_style_once(); // เตรียมสไตล์แบบ static
+
   lv_obj_set_size             (spdb->main, width, height);
   lv_obj_set_style_bg_opa     (spdb->main, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_opa (spdb->main, LV_OPA_TRANSP, 0);
   lv_obj_set_style_pad_all    (spdb->main, 0, 0);
   lv_obj_set_scrollable       (spdb->main, true);
 
-  lv_style_init               (&spdb->btn_style);
-  lv_style_set_bg_color       (&spdb->btn_style, lv_color_hex(0xF0F1F7));
-  lv_style_set_border_opa     (&spdb->btn_style, LV_OPA_TRANSP);
-  lv_style_set_shadow_opa     (&spdb->btn_style, LV_OPA_TRANSP);
-  lv_style_set_radius         (&spdb->btn_style, 10);
-  lv_style_set_pad_all        (&spdb->btn_style, 0);
-  lv_style_set_size           (&spdb->btn_style, 30, 30);
-
   spdb->value_txt = lv_label_create(spdb->main);
 
   spdb->down_btn      = lv_button_create(spdb->main);
   spdb->down_btn_sign = lv_label_create(spdb->down_btn);
 
-  lv_obj_add_style            (spdb->down_btn, &spdb->btn_style, 0);
+  lv_obj_add_style            (spdb->down_btn, &s_spdb_btn_style, 0);
   lv_obj_set_align            (spdb->down_btn, LV_ALIGN_LEFT_MID);
   lv_obj_set_scrollable       (spdb->down_btn, false);
   lv_obj_set_ext_click_area   (spdb->down_btn, 10);
@@ -201,7 +206,7 @@ vd_spinbox_t *vd_spinbox_create(lv_obj_t *parant, uint16_t width, uint16_t heigh
   spdb->up_btn      = lv_button_create(spdb->main);
   spdb->up_btn_sign = lv_label_create(spdb->up_btn);
 
-  lv_obj_add_style            (spdb->up_btn, &spdb->btn_style, 0);
+  lv_obj_add_style            (spdb->up_btn, &s_spdb_btn_style, 0);
   lv_obj_set_align            (spdb->up_btn, LV_ALIGN_RIGHT_MID);
   lv_obj_set_scrollable       (spdb->up_btn, false);
   lv_obj_set_ext_click_area   (spdb->up_btn, 10);
@@ -557,6 +562,7 @@ vd_cart_item_t *vd_cart_item_create(vd_home_page_t *hp, vd_prod_card_t *prod){
   lv_obj_set_scrollable         (item->main_bg, false);
   lv_obj_set_style_radius       (item->main_bg, 0, 0);
   lv_obj_set_style_clip_corner  (item->main_bg, true, 0); // ซ่อนส่วนที่ล้นตอนสไลด์
+  //lv_obj_null_on_delete         (&item->main_bg);
 
   item->bg_delete = lv_obj_create(item->main_bg);
 

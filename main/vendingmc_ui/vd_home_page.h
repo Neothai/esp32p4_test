@@ -52,7 +52,7 @@ typedef enum vd_err_t {
 
 typedef struct vd_spinbox_t {
   lv_obj_t *main;
-  lv_style_t btn_style;
+  //lv_style_t btn_style;
   lv_obj_t *value_txt;
   lv_obj_t *down_btn;
   lv_obj_t *down_btn_sign;
@@ -127,6 +127,7 @@ vd_home_page_t *vd_home_page_create(lv_obj_t *parant, uint16_t display_w, uint16
 
 vd_prod_card_t *vd_prod_card_create(vd_home_page_t *hp, const char *prod_name, float prod_full_price, float prod_disc_price, const void* prod_img_src, vd_prod_card_clicked_cb_t card_cb);
 
+// แก้แรมรั่วจากการกดเพิ่มสินค้าเยอะๆ ลงตระกร้าแล้วลบออก ได้แล้ว
 vd_cart_item_t *vd_cart_item_create(vd_home_page_t *hp, vd_prod_card_t *prod);
 vd_err_t        vd_cart_item_delete(vd_cart_item_t *item);
 vd_err_t        vd_cart_recalc_total_price(vd_home_page_t *hp);

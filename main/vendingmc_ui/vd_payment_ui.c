@@ -134,6 +134,7 @@ static vd_payment_notify_t * _vd_payment_notify_create(lv_obj_t *parent, bool is
     lv_obj_set_style_radius(notify->main, is_fullscreen ? 0 : 24, 0);
     //lv_obj_set_style_clip_corner(notify->main, true, 0);
     lv_obj_set_scrollable(notify->main, false);
+    //lv_obj_null_on_delete(&notify->main);
 
     // 2. [Top Timeout Bar]
     notify->top_bar_track = lv_obj_create(notify->main);
@@ -514,6 +515,7 @@ vd_payment_opt_dialog_t *vd_payment_opt_dialog_create(lv_obj_t *parent, lv_event
   lv_obj_set_style_pad_all      (paym_dialog->main, 0, 0);
   lv_obj_set_clickable          (paym_dialog->main, false);
   lv_obj_set_style_clip_corner  (paym_dialog->main, true, 0);
+  //lv_obj_null_on_delete         (&paym_dialog->main);
 
   paym_dialog->title = lv_label_create(paym_dialog->main);
 
@@ -832,13 +834,13 @@ vd_err_t vd_payment_opt_send_payment_ok_signal(vd_payment_opt_dialog_t *dialog){
 
   _vd_hidden_all_dialog_child(dialog);
 
-  vd_payment_notify_t *notify = _vd_payment_notify_create(dialog->main, true);
+  dialog->payment_notify = _vd_payment_notify_create(dialog->main, true);
 
-  _vd_payment_notify_set_text             (notify, "ชำระเงินสำเร็จ", "กรุณารับสินค้าที่ช่องรับด้านล่าง");
-  _vd_payment_notify_set_transaction_info (notify, "TXN-20260920-04", lv_label_get_text(dialog->total_amount));
-  _vd_payment_notify_set_timeout          (notify, 5000); // แสดงผล 5 วินาที
-  _vd_payment_notify_set_close_cb         (notify, on_notify_closed_cb, dialog);
-  _vd_payment_notify_show                 (notify);
+  _vd_payment_notify_set_text             (dialog->payment_notify, "ชำระเงินสำเร็จ", "กรุณารับสินค้าที่ช่องรับด้านล่าง");
+  _vd_payment_notify_set_transaction_info (dialog->payment_notify, "TXN-20260920-04", lv_label_get_text(dialog->total_amount));
+  _vd_payment_notify_set_timeout          (dialog->payment_notify, 5000); // แสดงผล 5 วินาที
+  _vd_payment_notify_set_close_cb         (dialog->payment_notify, on_notify_closed_cb, dialog);
+  _vd_payment_notify_show                 (dialog->payment_notify);
 
   return VD_OK;
 }
@@ -865,6 +867,7 @@ vd_payment_opt_card_t *vd_payment_opt_card_create(lv_obj_t *parent, const void* 
   lv_obj_set_overflow_visible (paym_opt_card->main, true);
   lv_obj_set_ext_draw_size    (paym_opt_card->main, 20);
   lv_obj_add_event_cb         (paym_opt_card->main, cb, LV_EVENT_CLICKED, user_data);
+  //lv_obj_null_on_delete       (&paym_opt_card->main);
 
   paym_opt_card->badge = vd_badge_create(paym_opt_card->main, "---", &anuphan_14, lv_color_hex(0x0A7A57), lv_color_white());
   
@@ -927,6 +930,7 @@ vd_badge_t *vd_badge_create(lv_obj_t *parent, const char *text, const lv_font_t 
   lv_obj_set_style_pad_hor    (badge->main, 8, 0);
   lv_obj_set_style_pad_ver    (badge->main, 3, 0);
   lv_obj_set_scrollable       (badge->main, false);
+  //lv_obj_null_on_delete       (&badge->main);
 
   badge->label = lv_label_create(badge->main);
 
@@ -978,6 +982,7 @@ vd_loading_bar_t *vd_loading_bar_create(lv_obj_t *parent, int32_t w, int32_t h, 
   lv_obj_set_style_border_opa (loading_bar->track, LV_OPA_TRANSP, 0);
   lv_obj_set_style_pad_all    (loading_bar->track, 0, 0);
   lv_obj_set_scrollable       (loading_bar->track, false);
+  //lv_obj_null_on_delete       (&loading_bar->track);
 
   loading_bar->indicator = lv_obj_create(loading_bar->track);
     
