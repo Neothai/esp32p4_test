@@ -161,7 +161,8 @@ typedef struct {
    ════════════════════════════════════════════════════════════ */
 
 #define VD_FILE_MAX_PATH_LEN    512 // ความยาว Path สูงสุด
-#define VD_FILE_MAX_DIR_ITEMS   256 // จำนวนไฟล์สูงสุดต่อ 1 โฟลเดอร์
+#define VD_FILE_MAX_DIR_ITEMS   2000   // เดิม 256
+#define VD_FILE_ITEMS_PER_PAGE  100    // ← เพิ่มใหม่: จำนวนแถวต่อหนึ่งหน้า
 
 /* ประเภทไฟล์ */
 typedef enum {
@@ -610,6 +611,9 @@ void vd_drives_free(vd_drive_info_t *drives, uint32_t count);
 lv_obj_t *vd_menu_page_files_create(vd_menu_content_t *content,
                                     const vd_file_browser_cbs_t *cbs,
                                     void *user_data);
+
+void vd_menu_page_files_refresh(bool back_to_drive_list);
+bool vd_menu_page_files_is_open(void);
 
 #ifdef __cplusplus
 }

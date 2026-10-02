@@ -89,7 +89,7 @@ typedef enum {
 typedef struct {
     uint8_t  index;            /* 0..ESP32_USBH_MSC_MAX_DRIVES-1 */
     uint8_t  pdrv;             /* เลขไดรฟ์ของ FatFS */
-    char     path[6];          /* "0:" "1:" ... */
+    char     path[4];          /* "0:" "1:" ... */
     uint64_t capacity_bytes;
     uint32_t block_count;
     uint16_t block_size;
@@ -104,8 +104,9 @@ typedef enum {
 } esp32_usbh_hid_kind_t;
 
 typedef struct {
-    int8_t  dx, dy, wheel;
-    uint8_t buttons;           /* bit0 L, bit1 R, bit2 M */
+    int16_t dx, dy;            /* เมาส์ report-protocol ใช้ 12/16 บิต ต้องรองรับ */
+    int8_t  wheel;
+    uint8_t buttons;           /* bit0 L, bit1 R, bit2 M, bit3/4 ปุ่มข้าง */
 } esp32_usbh_mouse_t;
 
 typedef struct {

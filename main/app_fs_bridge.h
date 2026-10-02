@@ -71,6 +71,9 @@ void app_fs_bridge_set_refresh_cb(app_fs_refresh_cb_t cb);
  */
 void app_fs_notify_usb_changed(void);
 
+/** ทิ้งแคชรายการไฟล์ทั้งหมด (เรียกเองได้ถ้ามีการเขียนไฟล์จากนอกโมดูลนี้) */
+void app_fs_invalidate_cache(void);
+
 /* ---------------- การกระทำกับไฟล์ (ใช้กับเมนูกดค้าง) ---------------- */
 
 esp_err_t app_fs_delete(const char *full_path, bool is_dir);

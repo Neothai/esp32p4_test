@@ -54,10 +54,15 @@ typedef struct {
     char              path[4];
     char              devname[CONFIG_USBHOST_DEV_NAMELEN];
 
-    FATFS             fs;
-    SemaphoreHandle_t mtx;        /* ล็อกต่อไดรฟ์ */
+    /* ⚠️ จองแบบ lazy ทั้งคู่ — เมื่อก่อนจองไว้ล่วงหน้าทุกช่องตั้งแต่ init
+     * ทำให้กินแรมภายใน (NDRV x BOUNCE_BYTES) + (NDRV x sizeof(FATFS))
+     * ซึ่งที่ NDRV=4, BOUNCE=32 KB, FF_MAX_SS=4096 คือ 128 KB + ~19 KB
+     * หายไปตั้งแต่บูต ทั้งที่ยังไม่มีไดรฟ์เสียบสักตัว */
+    FATFS            *fs;         /* จองตอน mount   คืนตอน unmount (PSRAM ได้) */
+    uint8_t          *bounce;     /* จองตอนเสียบ    คืนตอนถอด (ต้อง DMA internal) */
+    size_t            bounce_sz;  /* ขนาดที่จองได้จริง อาจน้อยกว่า BOUNCE_BYTES */
 
-    uint8_t          *bounce;     /* ต่อไดรฟ์ ไม่แชร์ */
+    SemaphoreHandle_t mtx;        /* ล็อกต่อไดรฟ์ */
 
     uint16_t          vid, pid;
     char              product[ESP32_USBH_STR_LEN];
@@ -315,7 +320,8 @@ static int io_run(drive_t *d, bool wr, uint32_t lba, void *buf, uint32_t nsec)
         ret = scsi_chunked(d, wr, lba, (uint8_t *)buf, nsec, bs);
     } else {
         used_bounce = true;
-        uint32_t maxs = BOUNCE_BYTES / bs;
+        uint32_t maxs = (uint32_t)(d->bounce_sz / bs);
+        if (maxs == 0) { d->io_busy--; return -1; }     /* ไม่มี bounce = ทำไม่ได้ */
         uint8_t *p = (uint8_t *)buf;
         uint32_t left = nsec, cur = lba;
         ret = 0;
@@ -408,6 +414,13 @@ static const diskio_ops_t s_ops = {
  *  mount / unmount (ทำบน worker task เสมอ ไม่ใช่เธรด hub)
  * ======================================================================== */
 
+static void free_fatfs(drive_t *d)
+{
+    if (d->fs) { priv_mem_free(d->fs); d->fs = NULL; }
+    d->free_bytes = d->total_bytes = 0;
+    d->cluster_bytes = 0;
+}
+
 /** คำนวณพื้นที่ว่าง — ช้ามาก ผู้เรียกต้องถือ d->mtx อยู่แล้ว */
 static void calc_usage_locked(drive_t *d)
 {
@@ -415,7 +428,7 @@ static void calc_usage_locked(drive_t *d)
     if (!d->mounted || !d->msc) return;
 
     uint16_t bs = d->msc->blocksize ? d->msc->blocksize : PRIV_DEFAULT_BLOCK_SIZE;
-    d->cluster_bytes = (uint32_t)d->fs.csize * bs;
+    d->cluster_bytes = d->fs ? (uint32_t)d->fs->csize * bs : 0;
 
     DWORD  fre = 0;
     FATFS *fsp = NULL;
@@ -439,15 +452,27 @@ static void do_mount(int slot)
     drive_t *d = &s_d[slot];
     if (!drv_ok(d) || d->mounted) return;
 
-    FRESULT fr = f_mount(&d->fs, d->path, 1);
+    /* จอง FATFS ตอนนี้ — ก้อนนี้ใหญ่ (มี win[FF_MAX_SS] อยู่ข้างใน
+     * ที่ FF_MAX_SS=4096 + exFAT = ~4.8 KB ต่อไดรฟ์) */
+    if (!d->fs) {
+        d->fs = (FATFS *)priv_alloc(sizeof(FATFS), "FATFS");
+        if (!d->fs) {
+            ESP_LOGE(TAG, "%s: จอง FATFS (%u ไบต์) ไม่พอ", d->path, (unsigned)sizeof(FATFS));
+            post_msc_event(d, ESP32_USBH_EV_MSC_IO_ERROR, -1);
+            return;
+        }
+    }
+
+    FRESULT fr = f_mount(d->fs, d->path, 1);
     if (fr != FR_OK) {
         ESP_LOGE(TAG, "%s: f_mount ล้มเหลว: %d", d->path, fr);
+        free_fatfs(d);                    /* คืนแรมทันที อย่าค้างไว้เปล่า ๆ */
         post_msc_event(d, ESP32_USBH_EV_MSC_IO_ERROR, (int)fr);
         return;
     }
     d->mounted = true;
 
-    uint32_t cl_bytes = (uint32_t)d->fs.csize *
+    uint32_t cl_bytes = (uint32_t)d->fs->csize *
                         (d->msc->blocksize ? d->msc->blocksize : PRIV_DEFAULT_BLOCK_SIZE);
     ESP_LOGI(TAG, "%s mount สำเร็จ | %s | %lu sectors x %u B | cluster %lu KB",
              d->path, d->product[0] ? d->product : d->devname,
@@ -530,6 +555,7 @@ static void do_unmount(int slot)
     if (!d->mounted) return;
     f_mount(NULL, d->path, 0);
     d->mounted = false;
+    free_fatfs(d);
     post_msc_event(d, ESP32_USBH_EV_MSC_UNMOUNTED, 0);
 }
 
@@ -596,6 +622,21 @@ void usbh_msc_run(struct usbh_msc *msc_class)
     d->vid = msc_class->hport->device_desc.idVendor;
     d->pid = msc_class->hport->device_desc.idProduct;
 
+    /* จอง bounce buffer ตอนนี้ (ไม่ใช่ตอนบูต) — ถอดสายแล้วคืนทันที */
+    if (!d->bounce) {
+        d->bounce = priv_alloc_dma(BOUNCE_BYTES,
+                        (size_t)ESP32_USBH_MSC_BOUNCE_MIN_SECTORS * 512,
+                        &d->bounce_sz, "MSC bounce");
+        if (!d->bounce) {
+            diskio_unregister_driver(pdrv);
+            xSemaphoreGive(s_tbl_mtx);
+            ESP_LOGE(TAG, "แรมภายในไม่พอสำหรับ bounce buffer — ไม่รับไดรฟ์นี้");
+            return;
+        }
+        ESP_LOGI(TAG, "%s: bounce %u ไบต์ (%u sector/ก้อน)",
+                 d->path, (unsigned)d->bounce_sz, (unsigned)(d->bounce_sz / 512));
+    }
+
     d->valid = true;                       /* หลังจากนี้ I/O เข้าได้แล้ว */
     xSemaphoreGive(s_tbl_mtx);
 
@@ -637,6 +678,10 @@ void usbh_msc_stop(struct usbh_msc *msc_class)
     diskio_unregister_driver(d->pdrv);
     priv_devtable_remove(msc_class->hport, msc_class->intf);
 
+    /* คืนแรมก้อนใหญ่ทั้งสองทันทีที่ถอดสาย */
+    free_fatfs(d);
+    if (d->bounce) { priv_mem_free(d->bounce); d->bounce = NULL; d->bounce_sz = 0; }
+
     ESP_LOGI(TAG, "ถอดไดรฟ์ %s (%s)", d->devname, d->path);
     d->msc = NULL;
 }
@@ -655,10 +700,10 @@ esp_err_t priv_msc_start(void)
     for (int i = 0; i < NDRV; i++) {
         s_d[i].st_lock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
         s_d[i].mtx     = xSemaphoreCreateRecursiveMutex();
-        s_d[i].bounce  = heap_caps_aligned_alloc(CONFIG_USB_ALIGN_SIZE, BOUNCE_BYTES,
-                            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_CACHE_ALIGNED);
-        if (!s_d[i].mtx || !s_d[i].bounce) {
-            ESP_LOGE(TAG, "จอง bounce buffer ไม่พอ (%d ไบต์ x %d ไดรฟ์)", BOUNCE_BYTES, NDRV);
+        /* ⚡ ไม่จอง bounce / FATFS ตรงนี้แล้ว — จองตอนเสียบไดรฟ์จริงเท่านั้น
+         * ประหยัดแรมภายใน NDRV x (BOUNCE_BYTES + sizeof(FATFS)) ตอนไม่มีอุปกรณ์ */
+        if (!s_d[i].mtx) {
+            ESP_LOGE(TAG, "สร้าง mutex ของไดรฟ์ไม่สำเร็จ");
             return ESP_ERR_NO_MEM;
         }
     }
@@ -675,6 +720,10 @@ esp_err_t priv_msc_start(void)
 
     ESP_LOGI(TAG, "โมดูล MSC พร้อม | ไดรฟ์สูงสุด %d | bounce %d B/ไดรฟ์ | sec/cmd %lu",
              NDRV, BOUNCE_BYTES, (unsigned long)s_max_sec);
+    ESP_LOGI(TAG, "แรมที่จองไว้ตอนนี้: 0 ไบต์ (จองตอนเสียบไดรฟ์) | "
+                  "ต่อไดรฟ์จะใช้ %u + %u = %u ไบต์",
+             (unsigned)BOUNCE_BYTES, (unsigned)sizeof(FATFS),
+             (unsigned)(BOUNCE_BYTES + sizeof(FATFS)));
     return ESP_OK;
 }
 
@@ -698,7 +747,8 @@ void priv_msc_stop(void)
     vTaskDelay(pdMS_TO_TICKS(250));          /* ให้ work_task ออกเอง */
 
     for (int i = 0; i < NDRV; i++) {
-        if (s_d[i].bounce) { heap_caps_free(s_d[i].bounce); s_d[i].bounce = NULL; }
+        if (s_d[i].bounce) { priv_mem_free(s_d[i].bounce); s_d[i].bounce = NULL; s_d[i].bounce_sz = 0; }
+        free_fatfs(&s_d[i]);
         if (s_d[i].mtx)    { vSemaphoreDelete(s_d[i].mtx);  s_d[i].mtx = NULL; }
     }
     if (s_work_q)  { vQueueDelete(s_work_q);      s_work_q  = NULL; }

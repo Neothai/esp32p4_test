@@ -53,6 +53,7 @@
 #include "vendingmc_ui/vd_menu.h"
 
 #include "app_fs_bridge.h"
+#include "app_hid_lvgl.h"
 
 /*
 #include "vendingmc_ui/fonts/anuphan_reg_ttf.h"
@@ -2330,15 +2331,18 @@ static void _menu_switch_async_cb(void *param) {
     }
 }
 
+static volatile bool s_fs_drives_changed = false;   /* ตั้งโดย on_usb() */
+
 /* ถูกเรียกบนเธรด LVGL เสมอ (app_fs_bridge จัดการ lock ให้แล้ว) */
 static void _fs_refresh_cb(void)
 {
-    if (!content) return;
-    if (s_pending_menu_id != MENU_ID_FILE_MGR) return;   /* ไม่ได้เปิดหน้านี้อยู่ */
+    if (!vd_menu_page_files_is_open()) return;
 
-    lv_indev_reset(NULL, NULL);
-    vd_menu_content_clear(content);
-    create_file_setting_page(content);
+    bool reset = s_fs_drives_changed;
+    s_fs_drives_changed = false;
+
+    /* ไม่สร้างหน้าใหม่แล้ว — วาดเฉพาะเนื้อใน ตำแหน่งโฟลเดอร์เดิมยังอยู่ */
+    vd_menu_page_files_refresh(reset);
 }
 
 static void _on_sidebar_menu_click(vd_menu_sidebar_t *sidebar, uint32_t item_id, const char *title, void *user_data) {
@@ -3018,16 +3022,20 @@ void sd_main(void *p){
 
 static void on_usb(const esp32_usbh_event_t *ev, void *ctx)
 {
+  app_hid_lvgl_feed(ev);
+
     switch (ev->id) {
     case ESP32_USBH_EV_MSC_MOUNTED:
         ESP_LOGI("app", "ไดรฟ์ %s พร้อม (%llu MB) — %s",
                  ev->msc.path, ev->msc.capacity_bytes >> 20, ev->dev.product);
-        app_fs_notify_usb_changed();        /* ⬅ เพิ่ม */
+        s_fs_drives_changed = true;      /* ไดรฟ์เพิ่ม/หาย -> เด้งกลับหน้าไดรฟ์ได้ */
+        app_fs_notify_usb_changed();
         break;
 
     case ESP32_USBH_EV_MSC_UNMOUNTED:
     case ESP32_USBH_EV_DEVICE_DETACHED:
-        app_fs_notify_usb_changed();        /* ⬅ เพิ่ม */
+        s_fs_drives_changed = true;      /* ไดรฟ์เพิ่ม/หาย -> เด้งกลับหน้าไดรฟ์ได้ */
+        app_fs_notify_usb_changed();
         break;
 
     case ESP32_USBH_EV_HID_REPORT:
@@ -3076,7 +3084,7 @@ void app_main(void) {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
   esp_lcd_dpi_panel_config_t dpi_config =
       EK79007_1024_600_PANEL_60HZ_CONFIG_CF(LCD_COLOR_FMT_RGB565);
-  dpi_config.dpi_clock_freq_mhz = 70;
+  dpi_config.dpi_clock_freq_mhz = 64;
   dpi_config.num_fbs = 2;
 #else
   esp_lcd_dpi_panel_config_t dpi_config =
@@ -3128,7 +3136,7 @@ void app_main(void) {
           .buff_dma = true,
           .buff_spiram = true,
           .direct_mode = true,
-          .sw_rotate = true,
+          //.sw_rotate = true,
       }};
 
   const lvgl_port_display_dsi_cfg_t dsi_cfg = {
@@ -3138,8 +3146,9 @@ void app_main(void) {
 
   lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
   lvgl_cfg.task_stack = 16 * 1024;
-  lvgl_cfg.timer_period_ms = 2;
-  lvgl_cfg.task_priority = 12;
+  lvgl_cfg.timer_period_ms = 6;
+  lvgl_cfg.task_priority = 10;
+  lvgl_cfg.task_affinity = 1;
   esp_err_t err = lvgl_port_init(&lvgl_cfg);
 
   display = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
@@ -3186,8 +3195,12 @@ void app_main(void) {
     ESP_LOGW(TAG, "NTP Sync timeout");
   }
 
-  xTaskCreate(usb, "usb", 8 * 1024, NULL, 5, NULL);
+  xTaskCreatePinnedToCore(usb, "usb", 8 * 1024, NULL, 5, NULL, 0);
   xTaskCreate(sd_main, "sd_main", 16 * 1024, NULL, 4, NULL);
+
+  lvgl_port_lock(0);
+  app_hid_lvgl_init(display);
+  lvgl_port_unlock();
 
     ESP_ERROR_CHECK(app_fs_bridge_init());
 app_fs_bridge_set_refresh_cb(_fs_refresh_cb);

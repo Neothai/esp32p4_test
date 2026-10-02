@@ -14,6 +14,8 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -64,6 +66,10 @@ typedef struct {
 
     uint8_t           prev_keys[6];
     uint8_t           prev_mod;
+    uint8_t           prev_btn;
+
+    /* --- mapping ของเมาส์ที่ได้จาก report descriptor (ดู parse_mouse_desc) --- */
+    priv_mouse_map_t  mmap;
 
     uint32_t          report_count, error_count;
 } hdev_t;
@@ -142,6 +148,135 @@ static int hid_set_protocol_fixed(struct usbh_hid *hid, uint8_t proto)
  *  ถอดความ report
  * ======================================================================== */
 
+/* ========================================================================
+ *  ตัวแกะ HID report descriptor สำหรับเมาส์
+ *
+ *  ทำไมต้องมี: เมาส์ยุคใหม่ (2.4G / dual-mode BT) จำนวนมาก "ประกาศ" ว่า
+ *  รองรับ boot protocol แต่พอสั่ง SET_PROTOCOL(boot) แล้ว "ไม่ทำตาม"
+ *  ยังส่ง report แบบ report-protocol ซึ่งมี Report ID นำหน้า 1 ไบต์
+ *  และแกน X/Y เป็น 12/16 บิต ไม่ใช่ 8 บิต
+ *
+ *  ผล: ถ้าใช้ layout ของ boot (b[0]=ปุ่ม b[1]=dx b[2]=dy) จะอ่านเพี้ยนหมด
+ *      -> กดปุ่มขวา (0x02) ไปโผล่เป็น dx=+2 เคอร์เซอร์วิ่งไปขวา  ← อาการที่เจอ
+ *
+ *  วิธีแก้: ไม่ไปบังคับ boot กับเมาส์ แต่อ่าน descriptor จริงแล้วคำนวณ
+ *  bit offset ของปุ่ม / X / Y / ล้อ เอาเอง
+ * ======================================================================== */
+
+static int32_t bits_get(const uint8_t *d, int n, uint16_t off, uint8_t size, bool sign)
+{
+    if (size == 0 || size > 32) return 0;
+    if ((off + size + 7) / 8 > (uint16_t)n) return 0;          /* เลยท้าย report */
+
+    uint32_t v = 0;
+    for (uint8_t i = 0; i < size; i++) {
+        uint16_t b = (uint16_t)(off + i);
+        if (d[b >> 3] & (1u << (b & 7))) v |= (1u << i);
+    }
+    if (sign && size < 32 && (v & (1u << (size - 1))))
+        v |= ~((1u << size) - 1u);                             /* sign extend */
+    return (int32_t)v;
+}
+
+/** แกะ descriptor หา offset ของ Button / X / Y / Wheel
+ *  คืน true ถ้าเจอทั้ง X และ Y (ถือว่าใช้ได้) */
+static bool parse_mouse_desc(const uint8_t *d, int len, priv_mouse_map_t *m)
+{
+    memset(m, 0, sizeof(*m));
+
+    uint16_t usage_page = 0;
+    uint8_t  rep_size = 0, rep_count = 0, rep_id = 0;
+    uint16_t bit_off = 0;
+    uint8_t  usages[16]; uint8_t nusage = 0;
+    uint16_t usage_min = 0, usage_max = 0;
+    bool     in_mouse = false, got_x = false, got_y = false;
+    int      depth = 0;
+
+    int i = 0;
+    while (i < len) {
+        uint8_t b0 = d[i++];
+        uint8_t bsize = b0 & 0x03; if (bsize == 3) bsize = 4;
+        uint8_t btype = (uint8_t)((b0 >> 2) & 0x03);
+        uint8_t btag  = (uint8_t)(b0 >> 4);
+
+        if (b0 == 0xFE) {                     /* long item — ข้าม */
+            if (i >= len) break;
+            uint8_t dsize = d[i];
+            i += 2 + dsize;
+            continue;
+        }
+        if (i + bsize > len) break;
+
+        uint32_t val = 0;
+        for (uint8_t k = 0; k < bsize; k++) val |= ((uint32_t)d[i + k]) << (8 * k);
+        i += bsize;
+
+        if (btype == 1) {                     /* ---- Global ---- */
+            switch (btag) {
+                case 0x0: usage_page = (uint16_t)val; break;
+                case 0x7: rep_size   = (uint8_t)val;  break;
+                case 0x8:                                   /* Report ID */
+                    rep_id  = (uint8_t)val;
+                    bit_off = 0;                            /* เริ่มนับใหม่ต่อ report */
+                    break;
+                case 0x9: rep_count  = (uint8_t)val;  break;
+                default: break;
+            }
+        } else if (btype == 2) {              /* ---- Local ---- */
+            switch (btag) {
+                case 0x0: if (nusage < sizeof(usages)) usages[nusage++] = (uint8_t)val; break;
+                case 0x1: usage_min = (uint16_t)val; break;
+                case 0x2: usage_max = (uint16_t)val; break;
+                default: break;
+            }
+        } else if (btype == 0) {              /* ---- Main ---- */
+            if (btag == 0xA) {                /* Collection */
+                depth++;
+                if (depth == 1 && usage_page == 0x01 && nusage && usages[0] == 0x02)
+                    in_mouse = true;          /* Generic Desktop / Mouse */
+                nusage = 0;
+            } else if (btag == 0xC) {         /* End Collection */
+                if (--depth <= 0) { depth = 0; if (got_x && got_y) break; in_mouse = false; }
+                nusage = 0;
+            } else if (btag == 0x8) {         /* Input */
+                bool constant = (val & 0x01) != 0;
+                uint16_t span = (uint16_t)(rep_size * rep_count);
+
+                if (in_mouse && !constant) {
+                    if (usage_page == 0x09 && !m->btn_cnt) {        /* Button page */
+                        m->btn_off = bit_off;
+                        m->btn_cnt = (uint8_t)((usage_max >= usage_min)
+                                   ? (usage_max - usage_min + 1) : rep_count);
+                        if (m->btn_cnt > rep_count) m->btn_cnt = rep_count;
+                        if (m->btn_cnt > 8) m->btn_cnt = 8;
+                    } else if (usage_page == 0x01 || usage_page == 0x0C) {
+                        /* usage ถูกไล่ให้ทีละช่องตามลำดับที่ประกาศ */
+                        for (uint8_t u = 0; u < nusage && u < rep_count; u++) {
+                            uint16_t off = (uint16_t)(bit_off + u * rep_size);
+                            switch (usages[u]) {
+                                case 0x30: m->x_off = off; m->x_size = rep_size; got_x = true; break;
+                                case 0x31: m->y_off = off; m->y_size = rep_size; got_y = true; break;
+                                case 0x38: m->w_off = off; m->w_size = rep_size; break;
+                                default: break;
+                            }
+                        }
+                    }
+                    if (m->report_id == 0) m->report_id = rep_id;
+                }
+                bit_off = (uint16_t)(bit_off + span);
+                nusage = 0; usage_min = usage_max = 0;
+            } else {                           /* Output / Feature */
+                nusage = 0; usage_min = usage_max = 0;
+            }
+        }
+    }
+
+    m->report_id  = rep_id ? m->report_id : 0;
+    m->total_bits = bit_off;
+    m->valid      = got_x && got_y;
+    return m->valid;
+}
+
 static void emit_report(hdev_t *h, const uint8_t *b, int n)
 {
     esp32_usbh_event_t ev;
@@ -164,7 +299,50 @@ static void emit_report(hdev_t *h, const uint8_t *b, int n)
                          ? ESP32_USBH_HID_REPORT_SIZE : (uint8_t)n;
     memcpy(ev.hid.raw, b, ev.hid.raw_len);
 
-    if (h->kind == ESP32_USBH_HID_KIND_MOUSE && n >= 3) {
+    if (h->kind == ESP32_USBH_HID_KIND_MOUSE && h->mmap.valid) {
+        /* --- โหมด report protocol: ใช้ offset จาก descriptor จริง --- */
+        const uint8_t *p = b;
+        int            m = n;
+        if (h->mmap.report_id) {
+            if (n < 1 || b[0] != h->mmap.report_id) {
+                /* ⚠️ ดองเกิลไร้สายมักส่งหลาย report ID ปนมาบน endpoint เดียวกัน
+                 *    (เช่น ID 2 = ปุ่มมัลติมีเดีย, ID 3 = สถานะแบตเตอรี่)
+                 *    ถ้าปล่อยให้โพสต์เป็น kind = MOUSE ทั้งที่ค่าทั้งก้อนเป็นศูนย์
+                 *    ฝั่ง LVGL จะเห็นเป็น "ปล่อยปุ่ม" สลับกับ "กดปุ่ม" รัว ๆ
+                 *    = อาการกดปุ่มแล้วแอปกระตุก/รวน  -> ต้องกันไม่ให้ไปถึง UI */
+                ev.hid.kind = ESP32_USBH_HID_KIND_OTHER;
+                goto skip_parse;
+            }
+            p = b + 1; m = n - 1;
+        }
+        int32_t dx = bits_get(p, m, h->mmap.x_off, h->mmap.x_size, true);
+        int32_t dy = bits_get(p, m, h->mmap.y_off, h->mmap.y_size, true);
+        int32_t wh = h->mmap.w_size ? bits_get(p, m, h->mmap.w_off, h->mmap.w_size, true) : 0;
+        int32_t bt = h->mmap.btn_cnt ? bits_get(p, m, h->mmap.btn_off, h->mmap.btn_cnt, false) : 0;
+
+        if (dx >  32767) dx =  32767;  
+        if (dx < -32768) dx = -32768;
+        if (dy >  32767) dy =  32767;  
+        if (dy < -32768) dy = -32768;
+        if (wh >    127) wh =    127;  
+        if (wh <   -128) wh =   -128;
+
+        /* คาบ 2 ms = 500 report/วินาที ต่ออุปกรณ์ ส่วนใหญ่ "ไม่มีอะไรเปลี่ยน"
+         * ถ้าโพสต์หมดจะถม event queue (ลึกแค่ ESP32_USBH_EVENT_QUEUE_LEN)
+         * จนเหตุการณ์อื่นตกคิว -> UI กระตุก  ตัดทิ้งตั้งแต่ตรงนี้ */
+        if (dx == 0 && dy == 0 && wh == 0 && (uint8_t)bt == h->prev_btn) return;
+        h->prev_btn = (uint8_t)bt;
+
+        ev.hid.mouse.buttons = (uint8_t)bt;
+        ev.hid.mouse.dx      = (int16_t)dx;
+        ev.hid.mouse.dy      = (int16_t)dy;
+        ev.hid.mouse.wheel   = (int8_t)wh;
+    } else if (h->kind == ESP32_USBH_HID_KIND_MOUSE && n >= 3) {
+        if (b[0] == h->prev_btn && (int8_t)b[1] == 0 && (int8_t)b[2] == 0 &&
+            (n < 4 || (int8_t)b[3] == 0)) return;
+        h->prev_btn = b[0];
+
+        /* --- โหมด boot protocol: layout ตายตัว --- */
         ev.hid.mouse.buttons = b[0];
         ev.hid.mouse.dx      = (int8_t)b[1];
         ev.hid.mouse.dy      = (int8_t)b[2];
@@ -176,6 +354,7 @@ static void emit_report(hdev_t *h, const uint8_t *b, int n)
         h->prev_mod = b[0];
     }
 
+skip_parse:
     priv_event_post(&ev);
 }
 
@@ -185,7 +364,8 @@ static void emit_report(hdev_t *h, const uint8_t *b, int n)
 
 static void hid_task(void *arg)
 {
-    hdev_t *h = (hdev_t *)arg;
+    hdev_t   *h = (hdev_t *)arg;
+    uint32_t  timeouts = 0;
     h->running = true;
 
     vTaskDelay(pdMS_TO_TICKS(PRIV_ENUM_SETTLE_MS));
@@ -222,6 +402,18 @@ static void hid_task(void *arg)
         }
         if (p < 1)  p = 1;
         if (p > 32) p = 32;
+
+        /* อุปกรณ์ FS/LS ที่อยู่หลัง hub ต้องใช้ split transaction ซึ่งกิน
+         * ช่อง microframe มาก การ poll ถี่ ๆ (bInterval 1-2 ms) ทำให้ชน
+         * กับ periodic schedule ของ hub จนแชนเนลค้าง — บีบขั้นต่ำเป็น 8 ms
+         * (125 Hz ยังลื่นเกินพอสำหรับเมาส์บน UI) */
+        if (hid->hport->parent && h->speed != ESP32_USBH_SPEED_HIGH &&
+            p < PRIV_HID_SPLIT_MIN_POLL_MS) {
+            ESP_LOGI(TAG, "%s: อยู่หลัง hub -> ขยับ poll จาก %u เป็น %u ms "
+                          "(กัน split transaction ชนกัน)",
+                     h->devname, (unsigned)p, PRIV_HID_SPLIT_MIN_POLL_MS);
+            p = PRIV_HID_SPLIT_MIN_POLL_MS;
+        }
         h->poll_ms = (uint8_t)p;
 
         if (h->subclass == HID_SUBCLASS_BOOTIF) {
@@ -238,8 +430,51 @@ static void hid_task(void *arg)
                           h->devname, &info);
         snprintf(h->product, sizeof(h->product), "%s", info.product);
 
+        memset(&h->mmap, 0, sizeof(h->mmap));
+
+        if (h->kind == ESP32_USBH_HID_KIND_MOUSE) {
+            /* ── เมาส์: ใช้ report protocol + แกะ descriptor ──
+             *
+             * เหตุผล: เมาส์ 2.4G / dual-mode จำนวนมากประกาศ boot subclass
+             * แต่ไม่ทำตาม SET_PROTOCOL(boot) ยังส่ง report แบบมี Report ID
+             * นำหน้าอยู่ดี -> ถ้าเชื่อ layout ของ boot จะอ่านเพี้ยนทั้งก้อน
+             * (กดปุ่มขวาแล้วเคอร์เซอร์วิ่งไปขวา เพราะ 0x02 ไปตกที่ช่อง dx)
+             *
+             * การอ่าน descriptor จริงใช้ได้กับทุกเมาส์ และยังได้ของแถม:
+             * แกน 16 บิต (เลื่อนเร็วไม่ตัน) + ปุ่มข้าง + ล้อแนวนอน
+             */
+            /* ⚠️ usbh_hid_get_report_descriptor() ส่งบัฟเฟอร์นี้ "ตรง ๆ" เข้า
+             *    usbh_control_transfer() ซึ่ง assert ว่าต้อง align ตาม
+             *    CONFIG_USB_ALIGN_SIZE (= 64) — malloc() ธรรมดาให้แค่ 4/8 ไบต์
+             *    -> ASSERT FAIL @ usb_hc_dwc2.c:983 */
+            uint8_t *rd = (uint8_t *)heap_caps_aligned_alloc(
+                              CONFIG_USB_ALIGN_SIZE, PRIV_HID_DESC_MAX,
+                              MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_CACHE_ALIGNED);
+            if (rd) {
+                int rl = usbh_hid_get_report_descriptor(hid, rd, PRIV_HID_DESC_MAX);
+                if (rl > 0 && parse_mouse_desc(rd, rl, &h->mmap)) {
+                    h->boot = false;
+                    hid_set_protocol_fixed(hid, HID_PROTOCOL_REPORT);
+                    ESP_LOGI(TAG, "%s: report protocol | id=%u X@%u/%ub Y@%u/%ub "
+                                  "W@%u/%ub ปุ่ม@%u x%u",
+                             h->devname, h->mmap.report_id,
+                             h->mmap.x_off, h->mmap.x_size,
+                             h->mmap.y_off, h->mmap.y_size,
+                             h->mmap.w_off, h->mmap.w_size,
+                             h->mmap.btn_off, h->mmap.btn_cnt);
+                } else {
+                    ESP_LOGW(TAG, "%s: แกะ report descriptor ไม่ได้ (%d ไบต์) "
+                                  "-> ถอยไปใช้ boot protocol", h->devname, rl);
+                }
+                heap_caps_free(rd);
+            } else {
+                ESP_LOGW(TAG, "%s: จองบัฟเฟอร์ descriptor ไม่ได้ -> ใช้ boot protocol",
+                         h->devname);
+            }
+        }
+
 #if ESP32_USBH_HID_FORCE_BOOT
-        if (h->subclass == HID_SUBCLASS_BOOTIF) {
+        if (h->subclass == HID_SUBCLASS_BOOTIF && !h->mmap.valid) {
             int r = hid_set_protocol_fixed(hid, HID_PROTOCOL_BOOT);
             h->boot = (r >= 0);
             if (r < 0) ESP_LOGW(TAG, "%s: SET_PROTOCOL(boot) ล้มเหลว %d", h->devname, r);
@@ -277,11 +512,35 @@ static void hid_task(void *arg)
         uint32_t len = h->mps;
         if (len > ESP32_USBH_HID_REPORT_SIZE) len = ESP32_USBH_HID_REPORT_SIZE;
 
+        /* ⚠️⚠️ ต้องเป็น "blocking" (timeout > 0) เท่านั้น — ห้ามใช้ async (timeout = 0)
+         *
+         * เหตุผล อยู่ที่ dwc2_urb_waitup() (usb_hc_dwc2.c:1129):
+         *     if (urb->timeout) usb_osal_sem_give(chan->waitsem);   <- blocking
+         *     else              dwc2_chan_free(chan);               <- async
+         *
+         * โหมด async จะ "คืนแชนเนลตั้งแต่อยู่ใน ISR" (chan->urb = NULL, :498-500)
+         * ทั้งที่ ISR เพิ่งเคลียร์ HCINT ไปเฉพาะบิตที่อ่านมาตอนต้นฟังก์ชัน
+         * ถ้ามีบิตใหม่ถูกเซ็ตระหว่างนั้น (เกิดง่ายมากกับ interrupt EP คาบ 2 ms)
+         * HAINT จะยังค้าง -> ISR ถูกเรียกซ้ำ -> urb = chan->urb = NULL
+         * -> urb->actual_length  =  Load access fault MTVAL 0x0C @ :1260
+         *
+         * โหมด blocking ปลอดภัยเพราะ dwc2_chan_free() ถูกเรียกจาก "task"
+         * หลัง ISR จบไปเรียบร้อยแล้ว (usb_hc_dwc2.c:1085)
+         *
+         * แล้ว timeout ล่ะ? ตั้งให้ยาวจนไม่มีวันหมด (30 วินาที) เพราะทางออก
+         * errout_timeout: จะเรียก usbh_kill_urb() ซึ่งก็ไปจบที่ dwc2_chan_free()
+         * อีกเหมือนกัน -> นั่นคือต้นเหตุของบั๊ก "เสียบผ่าน hub แล้วแครช" รอบก่อน
+         * การปลุก task ตอนถอดสาย ใช้ usbh_kill_urb() จาก usbh_hid_stop() แทน
+         * (ตอนนั้น urb->timeout ยังไม่ถูกเคลียร์ -> เข้าทาง sem_give ที่ปลอดภัย)
+         */
         usbh_int_urb_fill(urb, hid->hport, hid->intin, h->buf, len,
                           PRIV_HID_URB_TIMEOUT_MS, NULL, NULL);
         int ret = usbh_submit_urb(urb);
 
+        if (!h->alive) break;
+
         if (ret == 0) {
+            timeouts = 0;
             int n = urb->actual_length;
             if (n > 0) {
                 h->report_count++;
@@ -294,11 +553,24 @@ static void hid_task(void *arg)
             }
             vTaskDelay(pdMS_TO_TICKS(h->poll_override ? h->poll_override : h->poll_ms));
 
-        } else if (ret == -USB_ERR_NAK || ret == -USB_ERR_TIMEOUT) {
+        } else if (ret == -USB_ERR_NAK) {
             vTaskDelay(pdMS_TO_TICKS(h->poll_override ? h->poll_override : h->poll_ms));
 
         } else if (ret == -USB_ERR_SHUTDOWN || ret == -USB_ERR_NOTCONN) {
-            break;                                   /* ถอดสาย */
+            break;                                   /* ถอดสาย / ถูก kill */
+
+        } else if (ret == -USB_ERR_TIMEOUT) {
+            /* แชนเนลค้าง — CherryUSB kill URB ให้แล้ว แค่ยิงใหม่ก็กลับมาทำงาน
+             * (ต้องมีแพตช์ NULL guard ใน usb_hc_dwc2.c ก่อน ไม่งั้นแครช) */
+            h->error_count++;
+            if (++timeouts % PRIV_HID_TIMEOUT_LOG_EVERY == 1) {
+                ESP_LOGW(TAG, "%s: URB ค้าง %lu ครั้ง -> ยิงใหม่ "
+                              "(มักเกิดตอน LVGL ยึด CPU/บัสนาน)",
+                         h->devname, (unsigned long)timeouts);
+            }
+            urb->data_toggle = 0;                 /* เริ่ม toggle ใหม่ กัน DTERR */
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
 
         } else if (ret == -USB_ERR_STALL) {
             ESP_LOGW(TAG, "%s: endpoint STALL -> หยุด", h->devname);
@@ -349,6 +621,13 @@ void usbh_hid_run(struct usbh_hid *hid_class)
     /* k < ESP32_USBH_HID_MAX_DEVICES (<=16) จึงเป็นเลข 1-2 หลักเสมอ
      * แต่ GCC มองว่า "%d" ยาวได้ 11 หลัก -> ขยาย buffer ให้พอกับกรณีแย่สุด
      * ง่ายกว่าและปลอดภัยกว่าการไปไล่ปิด -Wformat-truncation */
+    if (!h->buf) {
+        h->buf = priv_alloc_dma(ESP32_USBH_HID_REPORT_SIZE,
+                     ESP32_USBH_HID_REPORT_SIZE,   /* เล็กมาก ไม่ลดขนาด */
+                     NULL, "HID report");
+        if (!h->buf) { ESP_LOGE(TAG, "จอง buffer ไม่พอ"); h->used = false; return; }
+    }
+
     char tn[24];
     snprintf(tn, sizeof(tn), "usbh_hid%d", k);
     if (priv_task_create(hid_task, tn, ESP32_USBH_HID_TASK_STACK, h,
@@ -368,6 +647,16 @@ void usbh_hid_stop(struct usbh_hid *hid_class)
 
     hdev_t *h = &s_h[k];
     h->alive = false;
+
+    /* ปลุก task ที่กำลังบล็อกรอ report อยู่
+     *
+     * ปลอดภัยเพราะตอนนี้ urb->timeout ยังเป็นค่าเดิม (ไม่ใช่ 0)
+     * usbh_kill_urb() จึงเข้าทาง  dwc2_halt() + usb_osal_sem_give()
+     * ไม่ใช่ dwc2_chan_free() ใน ISR  (ดูคอมเมนต์ยาวใน hid_task)
+     * การคืนแชนเนลจะไปเกิดในบริบทของ task เองหลัง sem_take คืนค่า */
+    if (hid_class && hid_class->intin_urb.hcpriv) {
+        usbh_kill_urb(&hid_class->intin_urb);
+    }
 
     /* ต้องรอให้ task ออกจริง เพราะ usbh_hid_disconnect() จะ
      * usbh_hid_class_free(hid_class) ทันทีหลังจากนี้ (usbh_hid.c:283) */
@@ -390,6 +679,7 @@ void usbh_hid_stop(struct usbh_hid *hid_class)
 
     priv_devtable_remove(hid_class->hport, hid_class->intf);
 
+    if (h->buf) { priv_mem_free(h->buf); h->buf = NULL; }
     h->used = false;
     h->hid  = NULL;
 }
@@ -406,10 +696,8 @@ esp_err_t priv_hid_start(void)
 
     for (int i = 0; i < NHID; i++) {
         s_h[i].last_mtx = xSemaphoreCreateMutex();
-        s_h[i].buf = heap_caps_aligned_alloc(CONFIG_USB_ALIGN_SIZE,
-                        ESP32_USBH_HID_REPORT_SIZE,
-                        MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_CACHE_ALIGNED);
-        if (!s_h[i].buf || !s_h[i].last_mtx) return ESP_ERR_NO_MEM;
+        if (!s_h[i].last_mtx) return ESP_ERR_NO_MEM;
+        /* buf จองตอนเสียบอุปกรณ์จริง (ดู usbh_hid_run) */
     }
 
     s_running = true;
