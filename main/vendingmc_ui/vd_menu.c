@@ -153,7 +153,21 @@ typedef struct {
     lv_obj_t             *browser_box;
     lv_obj_t             *breadcrumb_box;
     lv_obj_t             *file_list_box;
+
+    lv_timer_t           *fill_timer;      /* ตัวทยอยสร้างแถว */
+    uint32_t              rendered_rows;
+
+    uint32_t              page;            /* ← เพิ่ม: หน้าปัจจุบัน เริ่มที่ 0 */
+    uint32_t              page_start;      /* ← เพิ่ม: index แรกของหน้านี้ */
+    uint32_t              page_end;        /* ← เพิ่ม: index สุดท้าย+1 ของหน้านี้ */
+    lv_obj_t             *pager_box;       /* ← เพิ่ม: แถบ ◀ 1/20 ▶ */
+    lv_obj_t             *pager_label;
+    lv_obj_t             *pager_prev;
+    lv_obj_t             *pager_next;
 } _vd_files_ctx_t;
+
+/* หน้าไฟล์ที่กำลังเปิดอยู่ — ใช้สำหรับ refresh จากข้างนอกโดยไม่สร้างหน้าใหม่ */
+static _vd_files_ctx_t *s_active_files_ctx = NULL;
 
 /* โครงสร้าง Context ชั่วคราวสำหรับส่งให้ Action ใน Context Menu */
 typedef struct {
@@ -3127,6 +3141,53 @@ lv_obj_t *vd_menu_file_drive_tile_create(lv_obj_t *parent,
     return tile;
 }
 
+/* สไตล์ร่วมของแถวไฟล์ — สร้างครั้งเดียวใช้ทุกแถว
+ * ลด lv_obj_set_style_*() จาก ~25 ครั้ง/แถว เหลือ lv_obj_add_style() 2 ครั้ง */
+static lv_style_t s_fr_row, s_fr_row_pr, s_fr_ico, s_fr_name, s_fr_size;
+static bool       s_fr_ready = false;
+
+static void _file_row_styles_init(void)
+{
+    if (s_fr_ready) return;
+    s_fr_ready = true;
+
+    lv_style_init(&s_fr_row);
+    lv_style_set_width(&s_fr_row, lv_pct(100));
+    lv_style_set_height(&s_fr_row, 40);
+    lv_style_set_pad_hor(&s_fr_row, 10);
+    lv_style_set_pad_ver(&s_fr_row, 0);
+    lv_style_set_radius(&s_fr_row, 8);
+    lv_style_set_bg_opa(&s_fr_row, LV_OPA_TRANSP);
+    lv_style_set_bg_color(&s_fr_row, lv_color_hex(0xF1F5F9));
+    lv_style_set_layout(&s_fr_row, LV_LAYOUT_FLEX);
+    lv_style_set_flex_flow(&s_fr_row, LV_FLEX_FLOW_ROW);
+    lv_style_set_flex_main_place(&s_fr_row, LV_FLEX_ALIGN_START);
+    lv_style_set_flex_cross_place(&s_fr_row, LV_FLEX_ALIGN_CENTER);
+    lv_style_set_flex_track_place(&s_fr_row, LV_FLEX_ALIGN_CENTER);
+    lv_style_set_pad_column(&s_fr_row, 12);
+    lv_style_set_border_side(&s_fr_row, LV_BORDER_SIDE_TOP);
+    lv_style_set_border_width(&s_fr_row, 1);
+    lv_style_set_border_color(&s_fr_row, lv_color_hex(0xF3F4F6));
+
+    lv_style_init(&s_fr_row_pr);
+    lv_style_set_bg_color(&s_fr_row_pr, lv_color_hex(0xF8FAFC));
+    lv_style_set_bg_opa(&s_fr_row_pr, LV_OPA_COVER);
+
+    lv_style_init(&s_fr_ico);
+    lv_style_set_text_font(&s_fr_ico, &font_awesome_12);
+    lv_style_set_text_color(&s_fr_ico, VD_MENU_COLOR_SUBTITLE);
+
+    lv_style_init(&s_fr_name);
+    lv_style_set_text_font(&s_fr_name, &anuphan_med_14);
+    lv_style_set_text_color(&s_fr_name, VD_MENU_COLOR_TITLE);
+    lv_style_set_flex_grow(&s_fr_name, 1);
+    lv_style_set_pad_top(&s_fr_name, 2);
+
+    lv_style_init(&s_fr_size);
+    lv_style_set_text_font(&s_fr_size, &anuphan_12);
+    lv_style_set_text_color(&s_fr_size, lv_color_hex(0x9CA3AF));
+}
+
 /* ★ จุดแก้ที่ 5: แถวรายการไฟล์ (ตัด Subtitle ออก แสดงเฉพาะ Title และขนาดทางขวา) */
 lv_obj_t *vd_menu_file_row_create(lv_obj_t *parent,
                                   const char *name,
@@ -3138,63 +3199,35 @@ lv_obj_t *vd_menu_file_row_create(lv_obj_t *parent,
                                   lv_event_cb_t long_press_cb,
                                   void *user_data) {
     if (!parent) return NULL;
-    (void)meta_text; // ปลด subtitle ออก ไม่ใช้งานแล้ว
+    (void)meta_text;
+
+    _file_row_styles_init();
 
     lv_obj_t *row = lv_button_create(parent);
     lv_obj_remove_style_all(row);
-    lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, 40); // ล็อกความสูงพอเหมาะสำหรับ 1 บรรทัด
-    lv_obj_set_style_pad_hor(row, 10, 0);
-    lv_obj_set_style_pad_ver(row, 0, 0);
-    lv_obj_set_style_radius(row, 8, 0);
+    lv_obj_add_style(row, &s_fr_row,    0);
+    lv_obj_add_style(row, &s_fr_row_pr, LV_STATE_PRESSED);
 
-    lv_obj_set_style_bg_opa(row, is_selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_color(row, lv_color_hex(0xF1F5F9), 0);
-    lv_obj_set_style_bg_color(row, lv_color_hex(0xF8FAFC), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+    if (is_selected)                       lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    if (lv_obj_get_child_count(parent) == 1) lv_obj_set_style_border_width(row, 0, 0); /* แถวแรกไม่มีเส้นคั่น */
 
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, 12, 0);
-    lv_obj_set_clickable(row, true);
-
-    uint32_t cnt = lv_obj_get_child_count(parent);
-    if (cnt > 0) {
-        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_TOP, 0);
-        lv_obj_set_style_border_width(row, 1, 0);
-        lv_obj_set_style_border_color(row, lv_color_hex(0xF3F4F6), 0);
-    }
-
-    // ไอคอนไฟล์หรือโฟลเดอร์
     lv_obj_t *ico = lv_label_create(row);
     lv_label_set_text(ico, is_directory ? "\uf07b" : "\uf15b");
-    lv_obj_set_style_text_font(ico, &font_awesome_12, 0);
-    lv_obj_set_style_text_color(ico, VD_MENU_COLOR_SUBTITLE, 0);
+    lv_obj_add_style(ico, &s_fr_ico, 0);
 
-    // แสดงเฉพาะชื่อ (Title) 1 บรรทัดเต็ม
     lv_obj_t *name_lbl = lv_label_create(row);
     lv_label_set_text(name_lbl, name ? name : "ชื่อไฟล์");
-    lv_obj_set_style_text_font(name_lbl, &anuphan_med_14, 0);
-    lv_obj_set_style_text_color(name_lbl, VD_MENU_COLOR_TITLE, 0);
-    lv_obj_set_flex_grow(name_lbl, 1);
-    lv_obj_set_style_pad_top(name_lbl, 2, 0);
+    lv_obj_add_style(name_lbl, &s_fr_name, 0);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
 
-    // ขนาดไฟล์ชิดขวา
-    if (size_text && strlen(size_text) > 0) {
+    if (size_text && size_text[0]) {
         lv_obj_t *sz_lbl = lv_label_create(row);
         lv_label_set_text(sz_lbl, size_text);
-        lv_obj_set_style_text_font(sz_lbl, &anuphan_12, 0);
-        lv_obj_set_style_text_color(sz_lbl, lv_color_hex(0x9CA3AF), 0);
+        lv_obj_add_style(sz_lbl, &s_fr_size, 0);
     }
 
-    if (click_cb) {
-        lv_obj_add_event_cb(row, click_cb, LV_EVENT_CLICKED, user_data);
-    }
-    if (long_press_cb) {
-        lv_obj_add_event_cb(row, long_press_cb, LV_EVENT_LONG_PRESSED, user_data);
-    }
-
+    if (click_cb)      lv_obj_add_event_cb(row, click_cb,      LV_EVENT_CLICKED,      user_data);
+    if (long_press_cb) lv_obj_add_event_cb(row, long_press_cb, LV_EVENT_LONG_PRESSED, user_data);
     return row;
 }
 
@@ -3363,7 +3396,62 @@ static void _file_item_long_press_cb(lv_event_t *e) {
     _vd_files_show_context_menu(ctx, item, &point);
 }
 
+static void _file_item_click_cb(lv_event_t *e);
+static void _file_item_long_press_cb(lv_event_t *e);
+static void _vd_file_format_size(uint32_t size_kb, char *out_buf, size_t buf_size);
+
+#define VD_FILE_ROWS_PER_TICK 24      /* ~24 แถว/รอบ ใช้เวลาราว 20-30 ms */
+
+static void _file_rows_fill_cb(lv_timer_t *t)
+{
+    _vd_files_ctx_t *ctx = (_vd_files_ctx_t *)lv_timer_get_user_data(t);
+    if (!ctx || !ctx->file_list_box) { lv_timer_delete(t); return; }
+
+    if (ctx->rendered_rows < ctx->page_start) ctx->rendered_rows = ctx->page_start; /* ← เพิ่ม */
+
+    uint32_t end = ctx->rendered_rows + VD_FILE_ROWS_PER_TICK;
+    if (end > ctx->page_end) end = ctx->page_end;                                   /* ← แก้ */
+
+    for (; ctx->rendered_rows < end; ctx->rendered_rows++) {
+        vd_file_item_t *item = &ctx->cached_items[ctx->rendered_rows];
+        char size_buf[32] = {0};
+        if (item->type != VD_FILE_TYPE_DIR)
+            _vd_file_format_size(item->size_kb, size_buf, sizeof(size_buf));
+
+        lv_obj_t *row = vd_menu_file_row_create(
+            ctx->file_list_box, item->name, NULL,
+            (item->type == VD_FILE_TYPE_DIR) ? NULL : size_buf,
+            (item->type == VD_FILE_TYPE_DIR), false,
+            _file_item_click_cb, _file_item_long_press_cb, ctx);
+        if (row) lv_obj_set_user_data(row, item);
+    }
+
+    if (ctx->rendered_rows >= ctx->page_end) {                                      /* ← แก้ */
+        ctx->fill_timer = NULL;
+        lv_timer_delete(t);
+    }
+}
+
 static void _render_files_view(_vd_files_ctx_t *ctx);
+
+static void _pager_btn_cb(lv_event_t *e)
+{
+    _vd_files_ctx_t *ctx = (_vd_files_ctx_t *)lv_event_get_user_data(e);
+    if (!ctx) return;
+
+    /* +1 / -1 ฝากมากับ user_data ของปุ่ม */
+    intptr_t step = (intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+    uint32_t pages = (ctx->cached_item_count + VD_FILE_ITEMS_PER_PAGE - 1)
+                   / VD_FILE_ITEMS_PER_PAGE;
+    if (pages == 0) pages = 1;
+
+    if (step < 0 && ctx->page == 0)         return;
+    if (step > 0 && ctx->page + 1 >= pages) return;
+
+    ctx->page = (uint32_t)((int32_t)ctx->page + (int32_t)step);
+    lv_obj_scroll_to_y(ctx->file_list_box, 0, LV_ANIM_OFF);   /* ขึ้นบนสุดของหน้าใหม่ */
+    _render_files_view(ctx);
+}
 
 /* Event เมื่อแตะปุ่มใน Breadcrumb */
 static void _breadcrumb_btn_cb(lv_event_t *e) {
@@ -3378,6 +3466,9 @@ static void _breadcrumb_btn_cb(lv_event_t *e) {
         strncpy(ctx->current_path, target_path, VD_FILE_MAX_PATH_LEN);
         ctx->current_path[VD_FILE_MAX_PATH_LEN] = '\0';
     }
+
+    ctx->page = 0;
+
     _render_files_view(ctx);
 }
 
@@ -3393,6 +3484,8 @@ static void _drive_tile_click_cb(lv_event_t *e) {
     ctx->current_drive_id = strdup(d->id);
     ctx->current_drive_name = strdup(d->name);
     strcpy(ctx->current_path, "/");
+
+    ctx->page = 0;
 
     _render_files_view(ctx);
 }
@@ -3410,6 +3503,7 @@ static void _file_item_click_cb(lv_event_t *e) {
         } else {
             snprintf(ctx->current_path + cur_len, VD_FILE_MAX_PATH_LEN - cur_len, "/%s", item->name);
         }
+        ctx->page = 0;
         _render_files_view(ctx);
     } else {
         if (ctx->cbs.on_file_click) {
@@ -3438,6 +3532,8 @@ static void _render_files_view(_vd_files_ctx_t *ctx) {
 
     // ── มุมมองที่ 1: หน้าเลือกไดรฟ์ (Drive Grid) ──
     if (!ctx->current_drive_id) {
+        if (ctx->fill_timer) { lv_timer_delete(ctx->fill_timer); ctx->fill_timer = NULL; }
+
         lv_obj_set_hidden(ctx->drive_grid_box, false);
         lv_obj_set_hidden(ctx->browser_box, true);
         lv_obj_clean(ctx->drive_grid_box);
@@ -3577,6 +3673,7 @@ static void _render_files_view(_vd_files_ctx_t *ctx) {
     }
 
     // เรนเดอร์รายการแถวไฟล์ (ไม่มี Subtitle, มี Long Press Callback)
+    /*
     for (uint32_t i = 0; i < ctx->cached_item_count; i++) {
         vd_file_item_t *item = &ctx->cached_items[i];
         char size_buf[32] = {0};
@@ -3597,17 +3694,72 @@ static void _render_files_view(_vd_files_ctx_t *ctx) {
             ctx
         );
         lv_obj_set_user_data(row, item);
+    }*/
+
+        /* ── คำนวณว่าหน้านี้ครอบคลุม index ไหนบ้าง ── */
+    uint32_t total = ctx->cached_item_count;
+    uint32_t pages = (total + VD_FILE_ITEMS_PER_PAGE - 1) / VD_FILE_ITEMS_PER_PAGE;
+    if (pages == 0) pages = 1;
+    if (ctx->page >= pages) ctx->page = pages - 1;      /* กันหน้าค้างเกิน หลังรีเฟรช */
+
+    ctx->page_start = ctx->page * VD_FILE_ITEMS_PER_PAGE;
+    ctx->page_end   = ctx->page_start + VD_FILE_ITEMS_PER_PAGE;
+    if (ctx->page_end > total) ctx->page_end = total;
+
+    if (pages > 1) {
+        lv_obj_remove_flag(ctx->pager_box, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text_fmt(ctx->pager_label, "หน้า %lu/%lu  (%lu-%lu จาก %lu)",
+                              (unsigned long)(ctx->page + 1), (unsigned long)pages,
+                              (unsigned long)(ctx->page_start + 1),
+                              (unsigned long)ctx->page_end, (unsigned long)total);
+        lv_obj_set_style_opa(ctx->pager_prev, ctx->page == 0 ? LV_OPA_30 : LV_OPA_COVER, 0);
+        lv_obj_set_style_opa(ctx->pager_next,
+                             ctx->page + 1 >= pages ? LV_OPA_30 : LV_OPA_COVER, 0);
+    } else {
+        lv_obj_add_flag(ctx->pager_box, LV_OBJ_FLAG_HIDDEN);
     }
+
+    /* ── ทยอยสร้างแถวของหน้านี้ ── */
+    if (ctx->fill_timer) { lv_timer_delete(ctx->fill_timer); ctx->fill_timer = NULL; }
+    ctx->rendered_rows = ctx->page_start;
+    ctx->fill_timer = lv_timer_create(_file_rows_fill_cb, 10, ctx);
+    lv_timer_ready(ctx->fill_timer);
 }
+
+/* รีเฟรชหน้าไฟล์โดย "คงตำแหน่งเดิม" ไว้
+ *  back_to_drive_list = true  -> บังคับถอยกลับไปหน้าเลือกไดรฟ์
+ *                               (ใช้ตอนถอด USB ขณะอยู่ในไดรฟ์นั้น)
+ *  ⚠️ ต้องเรียกบนเธรด LVGL และ "ห้าม" เรียกจากข้างใน event callback
+ *     (ให้ผ่าน lv_async_call เสมอ) เพราะมันลบ object ที่กำลัง dispatch อยู่ */
+void vd_menu_page_files_refresh(bool back_to_drive_list)
+{
+    _vd_files_ctx_t *ctx = s_active_files_ctx;
+    if (!ctx) return;                       /* ไม่ได้เปิดหน้านี้อยู่ ไม่ต้องทำอะไร */
+
+    if (back_to_drive_list) {
+        if (ctx->current_drive_id)   { free(ctx->current_drive_id);   ctx->current_drive_id = NULL; }
+        if (ctx->current_drive_name) { free(ctx->current_drive_name); ctx->current_drive_name = NULL; }
+        ctx->current_path[0] = '\0';
+    }
+
+    lv_indev_reset(NULL, NULL);             /* ตัดการอ้างอิง object เก่าจากระบบสัมผัส */
+    _render_files_view(ctx);
+}
+
+bool vd_menu_page_files_is_open(void) { return s_active_files_ctx != NULL; }
 
 /* Event คืนแรมทั้งหมดเมื่อหน้าจอถูกทำลาย */
 static void _vd_files_page_cleanup_cb(lv_event_t *e) {
     _vd_files_ctx_t *ctx = (_vd_files_ctx_t *)lv_event_get_user_data(e);
     if (!ctx) return;
 
+    if (ctx->fill_timer) { lv_timer_delete(ctx->fill_timer); ctx->fill_timer = NULL; }
+
     if (ctx->current_drive_id) free(ctx->current_drive_id);
     if (ctx->current_drive_name) free(ctx->current_drive_name);
     if (ctx->current_path) free(ctx->current_path);
+
+    if (s_active_files_ctx == ctx) s_active_files_ctx = NULL;   /* ← เพิ่ม */
 
     _vd_files_clear_drives_cache(ctx);
     _vd_files_clear_items_cache(ctx);
@@ -3634,13 +3786,18 @@ lv_obj_t *vd_menu_page_files_create(vd_menu_content_t *content,
     ctx->current_path = (char *)malloc(VD_FILE_MAX_PATH_LEN + 1);
     ctx->current_path[0] = '\0';
 
+    s_active_files_ctx = ctx;                                   /* ← เพิ่ม */
+
     lv_obj_add_event_cb(card, _vd_files_page_cleanup_cb, LV_EVENT_DELETE, ctx);
 
     ctx->drive_grid_box = lv_obj_create(card);
     lv_obj_remove_style_all(ctx->drive_grid_box);
     lv_obj_set_size(ctx->drive_grid_box, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(ctx->drive_grid_box, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(ctx->drive_grid_box, 12, 0);
+    //lv_obj_set_flex_flow(ctx->drive_grid_box, LV_FLEX_FLOW_ROW);
+    //lv_obj_set_style_pad_column(ctx->drive_grid_box, 12, 0);
+
+    lv_obj_set_flex_flow(ctx->drive_grid_box, LV_FLEX_FLOW_ROW_WRAP);  /* :3642 แก้ */
+    lv_obj_set_style_pad_row(ctx->drive_grid_box, 12, 0);              /* เพิ่มใหม่ */
 
     ctx->browser_box = lv_obj_create(card);
     lv_obj_remove_style_all(ctx->browser_box);
@@ -3689,9 +3846,58 @@ lv_obj_t *vd_menu_page_files_create(vd_menu_content_t *content,
     lv_obj_set_style_text_color(lbl_dir, VD_MENU_COLOR_TITLE, 0);
 
     ctx->file_list_box = lv_obj_create(ctx->browser_box);
+    //lv_obj_remove_style_all(ctx->file_list_box);
+    //lv_obj_set_size(ctx->file_list_box, lv_pct(100), LV_SIZE_CONTENT);
+    //lv_obj_set_flex_flow(ctx->file_list_box, LV_FLEX_FLOW_COLUMN);
+
     lv_obj_remove_style_all(ctx->file_list_box);
-    lv_obj_set_size(ctx->file_list_box, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_width(ctx->file_list_box, lv_pct(100));
+    lv_obj_set_height(ctx->file_list_box, 380);          /* ← ความสูงคงที่ ปรับตามจอ */
     lv_obj_set_flex_flow(ctx->file_list_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(ctx->file_list_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(ctx->file_list_box, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(ctx->file_list_box, LV_SCROLLBAR_MODE_AUTO);
+
+        /* ── แถบเปลี่ยนหน้า: ◀  หน้า 1/20 (รายการ 1-100 จาก 2000)  ▶ ── */
+    ctx->pager_box = lv_obj_create(ctx->browser_box);
+    lv_obj_remove_style_all(ctx->pager_box);
+    lv_obj_set_size(ctx->pager_box, lv_pct(100), 40);
+    lv_obj_set_flex_flow(ctx->pager_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ctx->pager_box, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(ctx->pager_box, 16, 0);
+    lv_obj_add_flag(ctx->pager_box, LV_OBJ_FLAG_HIDDEN);   /* โชว์เฉพาะตอนเกิน 1 หน้า */
+
+    ctx->pager_prev = lv_button_create(ctx->pager_box);
+    lv_obj_remove_style_all(ctx->pager_prev);
+    lv_obj_set_size(ctx->pager_prev, 44, 32);
+    lv_obj_set_style_radius(ctx->pager_prev, 8, 0);
+    lv_obj_set_style_bg_opa(ctx->pager_prev, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(ctx->pager_prev, lv_color_hex(0xF1F5F9), 0);
+    lv_obj_set_user_data(ctx->pager_prev, (void *)(intptr_t)-1);
+    lv_obj_add_event_cb(ctx->pager_prev, _pager_btn_cb, LV_EVENT_CLICKED, ctx);
+    lv_obj_t *lp = lv_label_create(ctx->pager_prev);
+    lv_label_set_text(lp, "\uf053");                      /* fa-chevron-left */
+    lv_obj_set_style_text_font(lp, &font_awesome_12, 0);
+    lv_obj_center(lp);
+
+    ctx->pager_label = lv_label_create(ctx->pager_box);
+    lv_obj_set_style_text_font(ctx->pager_label, &anuphan_12, 0);
+    lv_obj_set_style_text_color(ctx->pager_label, lv_color_hex(0x6B7280), 0);
+    lv_label_set_text(ctx->pager_label, "");
+
+    ctx->pager_next = lv_button_create(ctx->pager_box);
+    lv_obj_remove_style_all(ctx->pager_next);
+    lv_obj_set_size(ctx->pager_next, 44, 32);
+    lv_obj_set_style_radius(ctx->pager_next, 8, 0);
+    lv_obj_set_style_bg_opa(ctx->pager_next, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(ctx->pager_next, lv_color_hex(0xF1F5F9), 0);
+    lv_obj_set_user_data(ctx->pager_next, (void *)(intptr_t)1);
+    lv_obj_add_event_cb(ctx->pager_next, _pager_btn_cb, LV_EVENT_CLICKED, ctx);
+    lv_obj_t *ln = lv_label_create(ctx->pager_next);
+    lv_label_set_text(ln, "\uf054");                      /* fa-chevron-right */
+    lv_obj_set_style_text_font(ln, &font_awesome_12, 0);
+    lv_obj_center(ln);
 
     _render_files_view(ctx);
     return card;

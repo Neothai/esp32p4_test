@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "driver/gpio.h"
 
 #include "usbh_core.h"
@@ -179,6 +180,110 @@ bool priv_event_post_isr(const esp32_usbh_event_t *ev, BaseType_t *hpw)
         return false;
     }
     return true;
+}
+
+/* ==========================================================================
+ *  ตัวช่วยจองหน่วยความจำ — ใช้ร่วมกันทั้งไลบรารี
+ *
+ *  นโยบาย
+ *   - ก้อนที่ "ไม่ใช่ DMA" (FATFS object, แคช, ตาราง): ถ้าจองแล้วแรมภายใน
+ *     จะเหลือต่ำกว่า ESP32_USBH_INTERNAL_RESERVE_KB ให้ย้ายไป PSRAM
+ *     ปลอดภัยเต็มที่ เพราะ CPU เข้าถึงผ่านแคชตามปกติ
+ *
+ *   - ก้อนที่ "เป็น DMA" (bounce buffer, HID report buffer): ไม่ย้ายไป PSRAM
+ *     โดยปริยาย เพราะ ESP32-P4 ไม่มี cache-coherent interconnect
+ *     ถ้าแรมภายในตึง จะ "ลดขนาดลงทีละครึ่ง" แทน — ช้าลงแต่ยังทำงานได้
+ *     (เปิด ESP32_USBH_ALLOW_PSRAM_DMA = 1 ได้ถ้าทดสอบเองแล้ว)
+ * ========================================================================== */
+
+#define MEM_RESERVE_BYTES ((size_t)ESP32_USBH_INTERNAL_RESERVE_KB * 1024)
+
+size_t priv_internal_free(void)
+{
+    return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void *priv_alloc(size_t size, const char *what)
+{
+    size_t freemem = priv_internal_free();
+
+    if (freemem > size && (freemem - size) >= MEM_RESERVE_BYTES) {
+        void *p = heap_caps_calloc(1, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (p) return p;
+    }
+
+    /* แรมภายในตึง -> ลอง PSRAM */
+    void *p = heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p) {
+        ESP_LOGW(TAG, "%s: แรมภายในเหลือ %u KB (กันไว้ %d KB) -> จอง %u ไบต์บน PSRAM แทน",
+                 what ? what : "alloc", (unsigned)(freemem / 1024),
+                 ESP32_USBH_INTERNAL_RESERVE_KB, (unsigned)size);
+        return p;
+    }
+
+    /* PSRAM ก็ไม่มี -> ยอมกินแรมภายในที่เหลือ ดีกว่าล้มเหลว */
+    p = heap_caps_calloc(1, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!p) ESP_LOGE(TAG, "%s: จอง %u ไบต์ไม่สำเร็จทั้ง internal และ PSRAM",
+                     what ? what : "alloc", (unsigned)size);
+    return p;
+}
+
+void *priv_alloc_dma(size_t want, size_t min, size_t *out_size, const char *what)
+{
+    const uint32_t caps_int = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_CACHE_ALIGNED;
+
+    for (size_t sz = want; sz >= min; sz /= 2) {
+        size_t freemem = priv_internal_free();
+
+        /* เผื่อให้ระบบเสมอ ยกเว้นตอนที่เหลือขนาดต่ำสุดแล้ว — ก้อนนั้นต้องได้ */
+        bool room_ok = (freemem > sz) && ((freemem - sz) >= MEM_RESERVE_BYTES);
+        if (room_ok || sz == min) {
+            void *p = heap_caps_aligned_alloc(CONFIG_USB_ALIGN_SIZE, sz, caps_int);
+            if (p) {
+                if (sz != want)
+                    ESP_LOGW(TAG, "%s: แรมภายในเหลือ %u KB -> ลดขนาดจาก %u เหลือ %u ไบต์ "
+                                  "(ความเร็วจะลดลง แต่ยังใช้งานได้)",
+                             what ? what : "dma", (unsigned)(freemem / 1024),
+                             (unsigned)want, (unsigned)sz);
+                if (out_size) *out_size = sz;
+                return p;
+            }
+        }
+        if (sz == min) break;
+    }
+
+#if ESP32_USBH_ALLOW_PSRAM_DMA
+    /* ทางเลือกสุดท้าย: PSRAM (ต้องมั่นใจว่า USB-OTG ของบอร์ดเข้าถึงได้จริง
+     * และ CONFIG_USB_DCACHE_ENABLE เปิดอยู่เพื่อให้ CherryUSB sync แคชให้) */
+    void *p = heap_caps_aligned_alloc(CONFIG_USB_ALIGN_SIZE, min,
+                  MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+    if (p) {
+        ESP_LOGW(TAG, "%s: จองบัฟเฟอร์ DMA %u ไบต์บน PSRAM "
+                      "(เปิด ESP32_USBH_ALLOW_PSRAM_DMA ไว้)", what, (unsigned)min);
+        if (out_size) *out_size = min;
+        return p;
+    }
+#endif
+
+    ESP_LOGE(TAG, "%s: จองบัฟเฟอร์ DMA ไม่สำเร็จแม้ขนาดต่ำสุด %u ไบต์",
+             what ? what : "dma", (unsigned)min);
+    if (out_size) *out_size = 0;
+    return NULL;
+}
+
+void priv_mem_free(void *p)
+{
+    if (p) heap_caps_free(p);
+}
+
+void priv_mem_report(const char *stage)
+{
+    ESP_LOGI(TAG, "แรม [%s] | internal %u KB (ก้อนใหญ่สุด %u KB) | DMA %u KB | PSRAM %u KB",
+             stage ? stage : "",
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_DMA) / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 }
 
 static void evt_task(void *arg)
@@ -636,6 +741,8 @@ esp_err_t esp32_usbh_init(const esp32_usbh_cfg_t *cfg)
              ESP32_USBH_MSC_MAX_SEC_PER_CMD, (unsigned long)S.hw_max_sectors,
              CONFIG_USBHOST_MAX_EXTHUBS, CONFIG_USBHOST_MAX_MSC_CLASS,
              CONFIG_USBHOST_MAX_HID_CLASS, (int)S.fetch_strings);
+
+    priv_mem_report("หลัง init");
     return ESP_OK;
 
 fail:

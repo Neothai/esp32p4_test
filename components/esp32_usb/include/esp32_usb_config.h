@@ -42,9 +42,18 @@ _Static_assert(ESP32_USBH_EVENT_TASK_STACK >= 2560 && ESP32_USBH_EVENT_TASK_STAC
 _Static_assert(ESP32_USBH_EVENT_TASK_PRIO >= 1 && ESP32_USBH_EVENT_TASK_PRIO <= 20,
                "ESP32_USBH_EVENT_TASK_PRIO ต้องอยู่ในช่วง 1..20 (ห้ามเกินเธรด hub)");
 
-/** core ที่ปักหมุด task ของไลบรารี: 0, 1 หรือ -1 (ไม่ปัก) */
+/**
+ * แกน CPU ที่จะปักหมุด task ทั้งหมดของไลบรารี (-1 = ไม่ปัก)
+ *
+ * ⭐ บนบอร์ดที่มีจอ LVGL ควรตั้งเป็น 0 แล้วตั้ง esp_lvgl_port ให้ใช้แกน 1
+ *    (lvgl_port_cfg_t.task_affinity = 1)
+ *
+ * ESP32-P4 มีสองแกน การปล่อยให้ LVGL กับ USB แย่งแกนเดียวกันทำให้
+ * interrupt endpoint พลาด deadline เวลา UI วาดหนัก ๆ — ซึ่งอุปกรณ์ FS/LS
+ * ที่อยู่หลัง hub (ต้องใช้ split transaction) จะพังทันที แยกแกนแล้วหมดปัญหา
+ */
 #ifndef ESP32_USBH_TASK_CORE
-#define ESP32_USBH_TASK_CORE -1
+#define ESP32_USBH_TASK_CORE 0
 #endif
 _Static_assert(ESP32_USBH_TASK_CORE >= -1 && ESP32_USBH_TASK_CORE <= 1,
                "ESP32_USBH_TASK_CORE ต้องเป็น -1, 0 หรือ 1");
@@ -225,11 +234,59 @@ _Static_assert(ESP32_USBH_HID_REPORT_SIZE >= 8 && ESP32_USBH_HID_REPORT_SIZE <= 
 _Static_assert(ESP32_USBH_HID_TASK_STACK >= 2560 && ESP32_USBH_HID_TASK_STACK <= 16384,
                "ESP32_USBH_HID_TASK_STACK ต้องอยู่ในช่วง 2560..16384");
 
+/**
+ * ⚠️ ต้อง "สูงกว่า" เธรด LVGL ของคุณ (esp_lvgl_port ปกติตั้งไว้ 12)
+ *
+ * interrupt endpoint ของ HID มี deadline จริง โดยเฉพาะเมื่ออุปกรณ์ FS/LS
+ * อยู่หลัง hub ความเร็ว HS ซึ่งต้องใช้ split transaction — SSPLIT กับ CSPLIT
+ * ต้องถูกยิงต่อเนื่องตามจังหวะ microframe ถ้า task ถูกเธรด LVGL แย่ง CPU
+ * ไปวาดจอเป็นร้อย ๆ ms สถานะ split ที่ค้างอยู่จะพัง และ hub จะรายงาน
+ * port error -> อุปกรณ์หลุดแล้ว enumerate ใหม่เอง (เหมือนถอดสายเอง)
+ *
+ * งานวาด UI รอได้ แต่ USB รอไม่ได้ -> ให้ HID แซง LVGL เสมอ
+ */
 #ifndef ESP32_USBH_HID_TASK_PRIO
-#define ESP32_USBH_HID_TASK_PRIO 7
+#define ESP32_USBH_HID_TASK_PRIO 14
 #endif
 _Static_assert(ESP32_USBH_HID_TASK_PRIO >= 1 && ESP32_USBH_HID_TASK_PRIO <= 20,
                "ESP32_USBH_HID_TASK_PRIO ต้องอยู่ในช่วง 1..20");
+
+/* ==========================================================================
+ *  การจัดการหน่วยความจำ (Memory policy)
+ * ========================================================================== */
+
+/** เหลือแรมภายในไว้ให้ระบบอย่างน้อยกี่ KB ก่อนจะยอมย้ายไป PSRAM
+ *  ถ้า (internal free - ขนาดที่จะจอง) < ค่านี้ -> จองบน PSRAM แทน
+ *  ใช้กับก้อนที่ "ไม่ใช่ DMA" เท่านั้น (เช่น FATFS object, แคชต่าง ๆ) */
+#ifndef ESP32_USBH_INTERNAL_RESERVE_KB
+#define ESP32_USBH_INTERNAL_RESERVE_KB 128
+#endif
+_Static_assert(ESP32_USBH_INTERNAL_RESERVE_KB >= 16 && ESP32_USBH_INTERNAL_RESERVE_KB <= 512,
+               "ESP32_USBH_INTERNAL_RESERVE_KB ต้องอยู่ในช่วง 16..512");
+
+/** ขนาด bounce buffer ขั้นต่ำ (sector) เมื่อแรมภายในไม่พอให้เต็มจำนวน
+ *  ไลบรารีจะลดขนาดลงทีละครึ่งจาก ESP32_USBH_MSC_BOUNCE_SECTORS จนถึงค่านี้
+ *  เล็กลง = ช้าลง แต่ยังใช้งานได้ ดีกว่าเสียบไม่ติด */
+#ifndef ESP32_USBH_MSC_BOUNCE_MIN_SECTORS
+#define ESP32_USBH_MSC_BOUNCE_MIN_SECTORS 8
+#endif
+_Static_assert(ESP32_USBH_MSC_BOUNCE_MIN_SECTORS >= 1 &&
+               ESP32_USBH_MSC_BOUNCE_MIN_SECTORS <= ESP32_USBH_MSC_BOUNCE_SECTORS,
+               "ESP32_USBH_MSC_BOUNCE_MIN_SECTORS ต้อง >=1 และไม่เกิน ESP32_USBH_MSC_BOUNCE_SECTORS");
+
+/**
+ * ยอมให้จอง "บัฟเฟอร์ DMA" บน PSRAM หรือไม่ (0 = ไม่ยอม, ค่าเริ่มต้น)
+ *
+ * ⚠️ อย่าเปิดถ้ายังไม่ได้ทดสอบเอง
+ *    ESP32-P4 ไม่มี cache-coherent interconnect (ดู ESP-IDF: Memory
+ *    Synchronization) DMA อ่าน/เขียนหน่วยความจำตรง ๆ ไม่ผ่านแคช
+ *    บัฟเฟอร์ USB บน PSRAM จึงต้อง writeback/invalidate ให้ถูกจังหวะทุกครั้ง
+ *    และพูลที่ USB-OTG เข้าถึงได้จริงบน P4 มีจำกัด (~250 KB)
+ *    ค่าเริ่มต้นจึงเลือก "ลดขนาด bounce" แทนการย้ายไป PSRAM
+ */
+#ifndef ESP32_USBH_ALLOW_PSRAM_DMA
+#define ESP32_USBH_ALLOW_PSRAM_DMA 0
+#endif
 
 /* ==========================================================================
  *  ตรวจความเข้ากันได้กับ usb_config.h ของ CherryUSB

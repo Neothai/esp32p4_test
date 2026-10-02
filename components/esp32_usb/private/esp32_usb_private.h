@@ -1,6 +1,6 @@
 /*
  * esp32_usb_private.h — ค่าคงที่และของภายในไลบรารี
- * ห้ามแก้ และห้าม include จากโค้ดผู้ใช้
+ * ⚠️ ห้ามแก้ และห้าม include จากโค้ดผู้ใช้
  */
 #ifndef ESP32_USB_PRIVATE_H
 #define ESP32_USB_PRIVATE_H
@@ -32,10 +32,36 @@ extern "C" {
 /* timeout มาตรฐาน */
 #define PRIV_EP0_MUTEX_WAIT_MS      3000
 #define PRIV_MOUNT_RETRY_DELAY_MS   120
-#define PRIV_STOP_JOIN_TIMEOUT_MS   800
+#define PRIV_STOP_JOIN_TIMEOUT_MS   2000  /* ต้องมากกว่า ALIVE_CHECK + DRAIN รวมกัน */
 #define PRIV_STOP_JOIN_STEP_MS      5
-#define PRIV_HID_URB_TIMEOUT_MS     1000
+/* เดิมเป็น timeout ของ usbh_submit_urb แบบ blocking — เลิกใช้แล้ว
+ * (ทำให้เกิด usbh_kill_urb -> chan->urb = NULL -> ISR deref NULL)
+ * ตอนนี้เป็นแค่คาบ "ตื่นมาเช็กว่ายังมีชีวิต" ของ task เท่านั้น */
+/* timeout ของ interrupt-IN — ตั้งยาวมากโดยเจตนา
+ * ทางออก errout_timeout ของ CherryUSB เรียก usbh_kill_urb() หลังเคลียร์
+ * urb->timeout = 0 ซึ่งทำให้ไปจบที่ dwc2_chan_free() = ต้นเหตุ NULL deref
+ * เราจึง "ห้าม" ให้มันหมดเวลาเอง ใช้ usbh_kill_urb() จาก usbh_hid_stop() แทน */
+#define PRIV_HID_URB_TIMEOUT_MS     250
+#define PRIV_HID_SPLIT_MIN_POLL_MS  8     /* คาบขั้นต่ำเมื่ออุปกรณ์ FS/LS อยู่หลัง hub */
+#define PRIV_HID_DESC_MAX           256   /* report descriptor ของเมาส์/คีย์บอร์ดไม่เคยเกินนี้ */
+#define PRIV_HID_TIMEOUT_LOG_EVERY  20
+
+/* ตำแหน่งบิตของแต่ละฟิลด์ในเมาส์ report (ได้จากการแกะ report descriptor) */
+typedef struct {
+    bool     valid;
+    uint8_t  report_id;     /* 0 = report นี้ไม่มี ID นำหน้า */
+    uint16_t total_bits;
+    uint16_t btn_off; uint8_t btn_cnt;
+    uint16_t x_off;   uint8_t x_size;
+    uint16_t y_off;   uint8_t y_size;
+    uint16_t w_off;   uint8_t w_size;
+} priv_mouse_map_t;
 #define PRIV_ENUM_SETTLE_MS         50
+
+/* SCSI bring-up หลังเสียบ (TEST UNIT READY / REQUEST SENSE / READ CAPACITY) */
+#define PRIV_MSC_SPINUP_DELAY_MS    100   /* รอให้ไดรฟ์ตื่นก่อนคุย SCSI ครั้งแรก */
+#define PRIV_SCSI_INIT_RETRY        6     /* จำนวนรอบที่ลอง usbh_msc_scsi_init() */
+#define PRIV_SCSI_INIT_DELAY_MS     300   /* หน่วงระหว่างรอบ */
 
 /* BOT (Bulk-Only Transport) */
 #define PRIV_BOT_RESET_REQUEST      0xFF
@@ -47,10 +73,6 @@ extern "C" {
 #define PRIV_TAG_MAIN               "esp32_usbh"
 #define PRIV_TAG_MSC                "esp32_usbh_msc"
 #define PRIV_TAG_HID                "esp32_usbh_hid"
-
-#define PRIV_MSC_SPINUP_DELAY_MS    100
-#define PRIV_SCSI_INIT_RETRY        6
-#define PRIV_SCSI_INIT_DELAY_MS     300
 
 /* ---------------- helper สร้าง task ตาม ESP32_USBH_TASK_CORE ---------------- */
 
@@ -99,10 +121,36 @@ void priv_fetch_strings(struct usbh_hubport *hport,
 
 /* ---------------- lifecycle ของแต่ละโมดูล (เรียกจาก usbh_main) ----------------
  *
- * สำคัญ: การเรียกฟังก์ชันเหล่านี้คือสิ่งที่ "บังคับให้ linker ดึง object file"
+ * ⚠️ สำคัญ: การเรียกฟังก์ชันเหล่านี้คือสิ่งที่ "บังคับให้ linker ดึง object file"
  * ของแต่ละโมดูลเข้ามา ถ้าไม่เรียก weak symbol usbh_msc_run()/usbh_hid_run()
  * ใน CherryUSB จะไม่ถูก override เลย (ESP-IDF ลิงก์คอมโพเนนต์เป็น .a)
  */
+/* ---------------- ตัวช่วยจองหน่วยความจำ (esp32_usbh_main.c) ---------------- */
+
+/** แรมภายในที่เหลือ (ไบต์) */
+size_t priv_internal_free(void);
+
+/**
+ * จองก้อนที่ "ไม่ใช่ DMA"
+ * ถ้าแรมภายในจะเหลือต่ำกว่า ESP32_USBH_INTERNAL_RESERVE_KB -> ไปจองบน PSRAM
+ * @param what ข้อความสำหรับ log เช่น "FATFS"
+ */
+void *priv_alloc(size_t size, const char *what);
+
+/**
+ * จองบัฟเฟอร์ DMA โดยลดขนาดลงทีละครึ่งถ้าแรมภายในไม่พอ
+ * @param want     ขนาดที่อยากได้ (ไบต์)
+ * @param min      ขนาดต่ำสุดที่ยังยอมรับได้
+ * @param out_size ขนาดที่จองได้จริง
+ * @return พอยน์เตอร์ หรือ NULL ถ้าแม้แต่ขนาดต่ำสุดก็ไม่ไหว
+ */
+void *priv_alloc_dma(size_t want, size_t min, size_t *out_size, const char *what);
+
+void priv_mem_free(void *p);
+
+/** พิมพ์สรุปแรมลง log */
+void priv_mem_report(const char *stage);
+
 #if ESP32_USBH_ENABLE_MSC
 esp_err_t priv_msc_start(void);
 void      priv_msc_stop(void);
