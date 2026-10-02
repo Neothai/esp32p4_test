@@ -4,6 +4,10 @@
 
 #include "ff.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+static SemaphoreHandle_t s_ff_mutex[FF_VOLUMES + 1];   /* +1 = volume lock ของระบบ */
 
 #if FF_USE_LFN == 3	/* Use dynamic memory allocation */
 
@@ -39,7 +43,7 @@ void ff_memfree (
 /* Definitions of Mutex                                                   */
 /*------------------------------------------------------------------------*/
 
-#define OS_TYPE	0	/* 0:Win32, 1:uITRON4.0, 2:uC/OS-II, 3:FreeRTOS, 4:CMSIS-RTOS */
+#define OS_TYPE	3	/* 0:Win32, 1:uITRON4.0, 2:uC/OS-II, 3:FreeRTOS, 4:CMSIS-RTOS */
 
 
 #if   OS_TYPE == 0	/* Win32 */
@@ -56,8 +60,8 @@ static mtxid Mutex[FF_VOLUMES + 1];		/* Table of mutex ID */
 static OS_EVENT *Mutex[FF_VOLUMES + 1];	/* Table of mutex pinter */
 
 #elif OS_TYPE == 3	/* FreeRTOS */
-#include "FreeRTOS.h"
-#include "semphr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 static SemaphoreHandle_t Mutex[FF_VOLUMES + 1];	/* Table of mutex handle */
 
 #elif OS_TYPE == 4	/* CMSIS-RTOS */

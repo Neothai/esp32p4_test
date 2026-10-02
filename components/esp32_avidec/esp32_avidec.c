@@ -101,9 +101,10 @@ static void _build_block_map(esp32_avidec_t *a) {
              (unsigned long long)a->avi->file_size);
 }
 
+/*
 static bool _exec_fast_seek(esp32_avidec_t *a, uint32_t target_sec) {
     if (!a->avi || a->block_cnt == 0 || a->fps <= 0) return false;
-    /* dwLength ของกล้องหลายรุ่นเป็น 0 -> ห้ามหารด้วยศูนย์ (เดิมได้ NaN/inf) */
+    // dwLength ของกล้องหลายรุ่นเป็น 0 -> ห้ามหารด้วยศูนย์ (เดิมได้ NaN/inf)
     if (a->total_frames <= 0) {
         ESP_LOGW(TAG, "seek: file reports 0 frames, time-based seek unavailable");
         return false;
@@ -139,13 +140,13 @@ static bool _exec_fast_seek(esp32_avidec_t *a, uint32_t target_sec) {
     }
 
     int match_offset = -1;
-    /* [แก้] ใช้ tag จริงของไฟล์ (เดิม hardcode "00dc") */
+    // [แก้] ใช้ tag จริงของไฟล์ (เดิม hardcode "00dc")
     const uint8_t t0 = (uint8_t)a->avi->video_tag[0];
     const uint8_t t1 = (uint8_t)a->avi->video_tag[1];
     const uint8_t t2 = (uint8_t)a->avi->video_tag[2];
     const uint8_t t3 = (uint8_t)a->avi->video_tag[3];
     const uint8_t t3alt = (t3 == 'c') ? 'b' : ((t3 == 'b') ? 'c' : t3);
-    /* [แก้] สแกนเท่าขนาดเฟรมที่ใหญ่สุดที่พบ (เดิมอ่าน 128 KB ทุกครั้งที่ seek) */
+    // [แก้] สแกนเท่าขนาดเฟรมที่ใหญ่สุดที่พบ (เดิมอ่าน 128 KB ทุกครั้งที่ seek)
     uint32_t scan_len = (a->max_frame_seen ? a->max_frame_seen + 64 : (32 * 1024));
     if (scan_len > a->cfg.video_buf_size) scan_len = a->cfg.video_buf_size;
     if (f_lseek(&a->avi->fil, (FSIZE_t)approx_pos) == FR_OK) {
@@ -168,8 +169,7 @@ static bool _exec_fast_seek(esp32_avidec_t *a, uint32_t target_sec) {
 
     uint64_t exact_pos = (match_offset >= 0) ? (approx_pos + match_offset) : a->blocks[blk_idx].movi_start;
 
-    /* [แก้] ผ่าน API ของ avilib เพื่อรักษา invariant ของบัฟเฟอร์
-             (FIL ptr ต้องเท่ากับ buf_off + buf_len เสมอ) */
+    // [แก้] ผ่าน API ของ avilib เพื่อรักษา invariant ของบัฟเฟอร์ (FIL ptr ต้องเท่ากับ buf_off + buf_len เสมอ)
     AVI_set_movi_region(a->avi, a->blocks[blk_idx].movi_start,
                                  a->blocks[blk_idx].movi_end);
     a->avi->pos     = exact_pos;
@@ -178,8 +178,112 @@ static bool _exec_fast_seek(esp32_avidec_t *a, uint32_t target_sec) {
     f_lseek(&a->avi->fil, (FSIZE_t)exact_pos);
 
     a->avi->video_pos  = (long)(target_sec * a->fps);
-    a->next_frame_time = 0;     /* เริ่มนับจังหวะใหม่หลัง seek */
+    a->next_frame_time = 0;     // เริ่มนับจังหวะใหม่หลัง seek
     a->dropped_frames  = 0;
+    return true;
+}
+*/
+static bool _exec_fast_seek(esp32_avidec_t *a, uint32_t target_sec) {
+    if (!a->avi || a->block_cnt == 0 || a->fps <= 0) return false;
+    if (a->total_frames <= 0) {
+        ESP_LOGW(TAG, "seek: file reports 0 frames, time-based seek unavailable");
+        return false;
+    }
+
+    double total_sec = (double)a->total_frames / a->fps;
+    if (target_sec >= (uint32_t)total_sec) {
+        target_sec = (uint32_t)total_sec - 1;
+    }
+
+    uint64_t total_payload_bytes = 0;
+    for (int i = 0; i < a->block_cnt; i++) {
+        total_payload_bytes += (a->blocks[i].movi_end - a->blocks[i].movi_start);
+    }
+    if (total_payload_bytes == 0) return false;
+
+    uint64_t target_stream_byte = (uint64_t)(((double)target_sec / total_sec) * (double)total_payload_bytes);
+
+    int blk_idx = 0;
+    uint64_t accum = 0;
+    for (int i = 0; i < a->block_cnt; i++) {
+        uint64_t blk_size = a->blocks[i].movi_end - a->blocks[i].movi_start;
+        if (target_stream_byte <= accum + blk_size || i == a->block_cnt - 1) {
+            blk_idx = i;
+            break;
+        }
+        accum += blk_size;
+    }
+
+    uint64_t approx_pos = (a->blocks[blk_idx].movi_start + (target_stream_byte - accum)) & ~511ULL;
+    if (approx_pos < a->blocks[blk_idx].movi_start) {
+        approx_pos = a->blocks[blk_idx].movi_start;
+    }
+
+    // รองรับทั้ง Tag ตัวพิมพ์เล็กและใหญ่ (00dc, 00DC, 00db, 00DB)
+    const uint8_t t0 = (uint8_t)a->avi->video_tag[0];
+    const uint8_t t1 = (uint8_t)a->avi->video_tag[1];
+    const uint8_t t2_l = 'd', t2_u = 'D';
+    const uint8_t t3_l = 'c', t3_u = 'C', t3_b = 'b', t3_B = 'B';
+
+    int64_t exact_pos = -1;
+    uint64_t scan_cursor = approx_pos;
+    const size_t chunk_read_size = 64 * 1024; // อ่านตรวจทีละ 64 KB
+    const size_t max_scan_total = 256 * 1024; // สแกนไปข้างหน้าไม่เกิน 256 KB
+    size_t total_scanned = 0;
+
+    // วนลูปกวาดหาหัวเฟรม JPEG ถัดไปข้างหน้า
+    while (total_scanned < max_scan_total && scan_cursor + 16 < a->blocks[blk_idx].movi_end) {
+        size_t to_read = chunk_read_size;
+        if (scan_cursor + to_read > a->blocks[blk_idx].movi_end) {
+            to_read = (size_t)(a->blocks[blk_idx].movi_end - scan_cursor);
+        }
+
+        if (f_lseek(&a->avi->fil, (FSIZE_t)scan_cursor) != FR_OK) break;
+        UINT br = 0;
+        if (f_read(&a->avi->fil, a->vbuf, to_read, &br) != FR_OK || br <= 16) break;
+
+        for (size_t i = 0; i + 10 < br; i++) {
+            // ตรวจหา FourCC ของ Video Stream
+            if (a->vbuf[i] == t0 && a->vbuf[i+1] == t1 &&
+               (a->vbuf[i+2] == t2_l || a->vbuf[i+2] == t2_u) &&
+               (a->vbuf[i+3] == t3_l || a->vbuf[i+3] == t3_u || a->vbuf[i+3] == t3_b || a->vbuf[i+3] == t3_B)) {
+
+                // ตรวจความถูกต้องของ JPEG Magic Header (FF D8)
+                if (a->vbuf[i + 8] == 0xFF && a->vbuf[i + 9] == 0xD8) {
+                    exact_pos = scan_cursor + i;
+                    uint32_t clen = (uint32_t)a->vbuf[i+4] | ((uint32_t)a->vbuf[i+5] << 8) |
+                                    ((uint32_t)a->vbuf[i+6] << 16) | ((uint32_t)a->vbuf[i+7] << 24);
+                    if (clen > a->max_frame_seen) a->max_frame_seen = clen;
+                    break;
+                }
+            }
+        }
+
+        if (exact_pos >= 0) break; // เจอแล้ว หลุดออกจากลูป
+
+        // ถ้ายังไม่เจอ ให้ขยับพอยน์เตอร์เดินหน้า (ซ้อนทับ 16 ไบต์กันรอยต่อระหว่างชิ้น)
+        scan_cursor += (br - 16);
+        total_scanned += (br - 16);
+    }
+
+    // ★ หากสแกนไป 256 KB แล้วยังไม่เจอเฟรม: ห้ามย้อนไปจุดเริ่มต้นไฟล์เด็ดขาด ให้คงตำแหน่งเดิมไว้
+    if (exact_pos < 0) {
+        ESP_LOGW(TAG, "Seek scan missed near byte %llu, aborting seek to prevent 0s jump", approx_pos);
+        return false;
+    }
+
+    // ตั้งพิกัดตำแหน่งใหม่ให้ตัวอ่านของ avilib
+    AVI_set_movi_region(a->avi, a->blocks[blk_idx].movi_start, a->blocks[blk_idx].movi_end);
+    a->avi->pos     = (avi_off_t)exact_pos;
+    a->avi->buf_off = (avi_off_t)exact_pos;
+    a->avi->buf_len = 0;
+    f_lseek(&a->avi->fil, (FSIZE_t)exact_pos);
+
+    // ปรับเวลาปัจจุบันให้ตรงกับจุดที่หาเจอจริง
+    a->avi->video_pos  = (long)(target_sec * a->fps);
+    a->next_frame_time = 0;     /* รีเซ็ต Pacing Clock */
+    a->dropped_frames  = 0;
+
     return true;
 }
 
@@ -207,6 +311,7 @@ static bool _grow_buf(uint8_t **pbuf, size_t *pcap, size_t want)
     return true;
 }
 
+/*
 static void _avidec_worker_task(void *pvParam) {
     esp32_avidec_t *a = (esp32_avidec_t *)pvParam;
     long chunk_len = 0;
@@ -232,7 +337,7 @@ static void _avidec_worker_task(void *pvParam) {
         }
 
         if (a->state != ESP32_AVIDEC_STATE_PLAYING) {
-            a->next_frame_time = 0;     /* เริ่มนับจังหวะใหม่เมื่อกลับมาเล่น */
+            a->next_frame_time = 0;     // เริ่มนับจังหวะใหม่เมื่อกลับมาเล่น
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -244,10 +349,10 @@ static void _avidec_worker_task(void *pvParam) {
 
         // จัดการกรณีบัฟเฟอร์เล็กเกินไป
         if (ret < 0) {
-            /* [แก้ v4] รู้ขนาดจริงจาก chunk_len แล้ว -> ขยายบัฟเฟอร์เท่าที่จำเป็น
-               แล้วอ่าน chunk เดิมซ้ำ (AVI_retry_last_chunk) โดยไม่ทิ้งเฟรม
-               ทำให้ไม่ต้อง "เดา" ขนาดจาก suggested อย่างเดียว และไม่เปลือง RAM */
-            size_t need = (size_t)chunk_len + 64u;      /* +64 กันขอบ header/padding */
+            // [แก้ v4] รู้ขนาดจริงจาก chunk_len แล้ว -> ขยายบัฟเฟอร์เท่าที่จำเป็น
+              // แล้วอ่าน chunk เดิมซ้ำ (AVI_retry_last_chunk) โดยไม่ทิ้งเฟรม
+              // ทำให้ไม่ต้อง "เดา" ขนาดจาก suggested อย่างเดียว และไม่เปลือง RAM 
+            size_t need = (size_t)chunk_len + 64u;      // +64 กันขอบ header/padding
             size_t cap  = (ret == -1) ? a->cfg.video_buf_size : a->cfg.audio_buf_size;
             size_t lim  = (ret == -1) ? ESP32_AVIDEC_VBUF_MAX : ESP32_AVIDEC_ABUF_MAX;
 
@@ -260,11 +365,11 @@ static void _avidec_worker_task(void *pvParam) {
                         ESP_LOGW(TAG, "buffer grown -> %u B for chunk %ld (grow #%u)",
                                  (unsigned)cap, chunk_len, (unsigned)a->buf_grow_count);
                     xSemaphoreGive(a->lock);
-                    continue;                        /* อ่าน chunk เดิมซ้ำด้วยบัฟเฟอร์ใหม่ */
+                    continue;                        // อ่าน chunk เดิมซ้ำด้วยบัฟเฟอร์ใหม่ 
                 }
             }
 
-            /* ขยายไม่ได้/เกินเพดาน: แจ้ง event + จำกัด log + ไม่ปล่อยให้วนร้อนๆ */
+            // ขยายไม่ได้/เกินเพดาน: แจ้ง event + จำกัด log + ไม่ปล่อยให้วนร้อนๆ 
             a->buf_small_frames++;
             if (a->buf_small_frames < 4 || (a->buf_small_frames % 100) == 0) {
                 ESP_LOGE(TAG, "buffer too small (ret=%d, chunk=%ld, vbuf=%u) - frame dropped",
@@ -278,15 +383,15 @@ static void _avidec_worker_task(void *pvParam) {
         }
 
         if (ret == 0) { // EOF
-            /* [แก้] รายงานความครบถ้วน: ถ้าแสดงไม่ครบตามที่ส่วนหัวบอก = มีช่วงที่ถูก
-               "ข้าม" ไป (LIST movi ประกาศสั้น / gap / chunk เสีย) ไม่ใช่แค่จบปกติ */
+            // [แก้] รายงานความครบถ้วน: ถ้าแสดงไม่ครบตามที่ส่วนหัวบอก = มีช่วงที่ถูก
+          // "ข้าม" ไป (LIST movi ประกาศสั้น / gap / chunk เสีย) ไม่ใช่แค่จบปกติ 
             if (a->total_frames > 0 && (long)a->frames_shown != a->total_frames) {
                 ESP_LOGW(TAG, "EOF: เล่นไป %u จาก %ld เฟรม (หาย %ld เฟรม) - ตรวจโครงสร้างไฟล์",
                          (unsigned)a->frames_shown, a->total_frames,
                          a->total_frames - (long)a->frames_shown);
             }
             a->state = ESP32_AVIDEC_STATE_STOPPED;
-            AVI_seek_start(a->avi);   /* [แก้] กรอกลับไปบล็อกแรกจริง (OpenDML-safe) */
+            AVI_seek_start(a->avi);   // [แก้] กรอกลับไปบล็อกแรกจริง (OpenDML-safe)
             a->next_frame_time = 0;
             if (a->event_cb) {
                 a->event_cb(ESP32_AVIDEC_EVENT_EOF, NULL, a->cfg.user_ctx);
@@ -301,17 +406,21 @@ static void _avidec_worker_task(void *pvParam) {
                 a->next_frame_time = esp_timer_get_time();
             a->next_frame_time += a->frame_interval_us;
             int64_t now  = esp_timer_get_time();
-            int64_t late = now - a->next_frame_time;   /* >0 = ช้ากว่ากำหนด */
+            int64_t late = now - a->next_frame_time;   // >0 = ช้ากว่ากำหนด 
 
-            /* [แก้] ถ้าสายเกิน 1.5 เฟรม ให้ "ทิ้งเฟรมนี้ก่อน decode"
-               - ประหยัด CPU/ไฟล์งานจอ และไม่เกิด burst ไล่เก็บยาว ๆ
-               - คงเส้นเวลาเดิมไว้ (ไม่รีเซ็ต) เพื่อให้ A/V กลับมาตรงกันได้ */
+            // [แก้] ถ้าสายเกิน 1.5 เฟรม ให้ "ทิ้งเฟรมนี้ก่อน decode"
+            //   - ประหยัด CPU/ไฟล์งานจอ และไม่เกิด burst ไล่เก็บยาว ๆ
+            //   - คงเส้นเวลาเดิมไว้ (ไม่รีเซ็ต) เพื่อให้ A/V กลับมาตรงกันได้ 
             if (late > (a->frame_interval_us * 3) / 2) {
                 a->dropped_frames++;
                 if ((a->dropped_frames % 50) == 1) {
                     ESP_LOGW(TAG, "pacing: %.0f ms late, dropped %lu frames",
                              (double)late / 1000.0, (unsigned long)a->dropped_frames);
                 }
+
+                // รีเซ็ตฐานเวลาใหม่ทันที ไม่ให้สะสมความหน่วงไปทริกเกอร์การดรอปในเฟรมถัดไป
+                a->next_frame_time = now; // เพิ่มเข้ามาใหม่เมื่อ 22/9/69
+
                 xSemaphoreGive(a->lock);
                 continue;
             }
@@ -343,7 +452,7 @@ static void _avidec_worker_task(void *pvParam) {
                 esp_rom_delay_us((uint32_t)diff);
                 continue;
             }
-            /* ช้ากว่ากำหนดแบบสะสมเกิน 1.5 วินาที (เช่น SD หลุด) -> ยอม resync */
+            // ช้ากว่ากำหนดแบบสะสมเกิน 1.5 วินาที (เช่น SD หลุด) -> ยอม resync 
             if (late > 1500000) {
                 ESP_LOGW(TAG, "pacing resync: %.1f s behind", (double)late / 1e6);
                 a->next_frame_time = now;
@@ -357,6 +466,193 @@ static void _avidec_worker_task(void *pvParam) {
         }
 
         xSemaphoreGive(a->lock);
+    }
+
+    a->task_hdl = NULL;
+    vTaskDelete(NULL);
+}
+*/
+
+static void _avidec_worker_task(void *pvParam) {
+    esp32_avidec_t *a = (esp32_avidec_t *)pvParam;
+    long chunk_len = 0;
+
+    while (a->task_run) {
+        // 1. ประมวลผล Seek ทันที
+        int64_t want;
+        portENTER_CRITICAL(&a->seek_mux);
+        want = a->seek_target_sec;
+        a->seek_target_sec = -1;
+        portEXIT_CRITICAL(&a->seek_mux);
+
+        if (want >= 0) {
+            xSemaphoreTake(a->lock, portMAX_DELAY);
+            uint32_t target = (uint32_t)want;
+            bool seek_ok = _exec_fast_seek(a, target);
+            xSemaphoreGive(a->lock); // ปล่อย Lock ก่อนแจ้ง Event เสมอ
+
+            if (seek_ok && a->event_cb) {
+                a->event_cb(ESP32_AVIDEC_EVENT_SEEK_DONE, (void *)(uintptr_t)target, a->cfg.user_ctx);
+            }
+        }
+
+        // 2. ถ้าไม่ได้อยู่ในสถานะเล่น ให้พัก Task
+        if (a->state != ESP32_AVIDEC_STATE_PLAYING) {
+            a->next_frame_time = 0; /* เริ่มนับจังหวะใหม่เมื่อกลับมาเล่น */
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        // 3. ถือ Lock เฉพาะช่วงอ่านข้อมูลจากไฟล์ AVI
+        xSemaphoreTake(a->lock, portMAX_DELAY);
+
+        int ret = AVI_read_data(a->avi, (char *)a->vbuf, a->cfg.video_buf_size,
+                                (char *)a->abuf, a->cfg.audio_buf_size, &chunk_len);
+
+        // ดึงตำแหน่งเฟรมปัจจุบันไว้ก่อนปล่อย Lock
+        uint32_t cur_frame_idx = (a->avi && a->avi->video_pos > 0) ? (uint32_t)(a->avi->video_pos - 1) : 0;
+
+        // -------------------------------------------------------------
+        // กรณีบัฟเฟอร์เล็กเกินไป (ต้องการขยายขนาดและ Retry)
+        // -------------------------------------------------------------
+        if (ret < 0) {
+            size_t need = (size_t)chunk_len + 64u;
+            size_t cap  = (ret == -1) ? a->cfg.video_buf_size : a->cfg.audio_buf_size;
+            size_t lim  = (ret == -1) ? ESP32_AVIDEC_VBUF_MAX : ESP32_AVIDEC_ABUF_MAX;
+
+            if (need <= lim && need > cap && _grow_buf(ret == -1 ? &a->vbuf : &a->abuf, &cap, need)) {
+                if (ret == -1) a->cfg.video_buf_size = cap;
+                else           a->cfg.audio_buf_size = cap;
+
+                if (AVI_retry_last_chunk(a->avi) == 0) {
+                    a->buf_grow_count++;
+                    if (a->buf_grow_count <= 4 || (a->buf_grow_count % 20) == 0) {
+                        ESP_LOGW(TAG, "buffer grown -> %u B for chunk %ld (grow #%u)",
+                                 (unsigned)cap, chunk_len, (unsigned)a->buf_grow_count);
+                    }
+                    xSemaphoreGive(a->lock);
+                    continue; /* อ่าน chunk เดิมซ้ำด้วยบัฟเฟอร์ใหม่ */
+                }
+            }
+
+            a->buf_small_frames++;
+            if (a->buf_small_frames < 4 || (a->buf_small_frames % 100) == 0) {
+                ESP_LOGE(TAG, "buffer too small (ret=%d, chunk=%ld, vbuf=%u) - frame dropped",
+                         ret, chunk_len, (unsigned)a->cfg.video_buf_size);
+            }
+
+            xSemaphoreGive(a->lock); // คืน Lock ก่อนแจ้ง Error และดีเลย์
+
+            if (a->event_cb) {
+                a->event_cb(ESP32_AVIDEC_EVENT_ERROR, (void *)(intptr_t)ret, a->cfg.user_ctx);
+            }
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+
+        // -------------------------------------------------------------
+        // กรณีอ่านถึงท้ายไฟล์ (EOF)
+        // -------------------------------------------------------------
+        if (ret == 0) {
+            if (a->total_frames > 0 && (long)a->frames_shown != a->total_frames) {
+                ESP_LOGW(TAG, "EOF: เล่นไป %u จาก %ld เฟรม (หาย %ld เฟรม) - ตรวจโครงสร้างไฟล์",
+                         (unsigned)a->frames_shown, a->total_frames,
+                         a->total_frames - (long)a->frames_shown);
+            }
+            a->state = ESP32_AVIDEC_STATE_STOPPED;
+            AVI_seek_start(a->avi);
+            a->next_frame_time = 0;
+
+            xSemaphoreGive(a->lock); // คืน Lock ทันที ไม่ถือค้างไปเข้า Callback
+
+            if (a->event_cb) {
+                a->event_cb(ESP32_AVIDEC_EVENT_EOF, NULL, a->cfg.user_ctx);
+                a->event_cb(ESP32_AVIDEC_EVENT_STATE_CHANGED, (void *)(uintptr_t)a->state, a->cfg.user_ctx);
+            }
+            continue;
+        }
+
+        // -------------------------------------------------------------
+        // ★ คืน Lock ทันทีสำหรับกรณีอ่านข้อมูลสำเร็จ (ret == 1 หรือ ret == 2)
+        // เพื่อให้กระบวนการ Pacing, Decode และ Callback ทำงานนอก Lock อิสระ 100%
+        // -------------------------------------------------------------
+        xSemaphoreGive(a->lock);
+
+        // -------------------------------------------------------------
+        // 5. กระบวนการประมวลผลข้อมูลเสียง (Audio Chunk)
+        // -------------------------------------------------------------
+        if (ret == 2 && chunk_len > 0) {
+            if (a->audio_cb) {
+                a->audio_cb(a->abuf, (size_t)chunk_len, a->cfg.user_ctx);
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 4. กระบวนการประมวลผลเฟรมวิดีโอ (Video Chunk)
+        // -------------------------------------------------------------
+        if (ret == 1 && chunk_len > 4) {
+            if (a->next_frame_time == 0) {
+                a->next_frame_time = esp_timer_get_time();
+            }
+            a->next_frame_time += a->frame_interval_us;
+            int64_t now  = esp_timer_get_time();
+            int64_t late = now - a->next_frame_time; /* >0 = ช้ากว่ากำหนด */
+
+            // ตรวจสอบ Pacing: ถ้าช้ากว่า 1.5 เฟรมให้ทิ้งเฟรมนี้เพื่อตามเวลาให้ทัน
+            if (late > (a->frame_interval_us * 3) / 2) {
+                a->dropped_frames++;
+                if ((a->dropped_frames % 50) == 1) {
+                    ESP_LOGW(TAG, "pacing: %.0f ms late, dropped %lu frames",
+                             (double)late / 1000.0, (unsigned long)a->dropped_frames);
+                }
+                // รีเซ็ตฐานเวลาใหม่ทันที ป้องกันอาการ Snowball Dropping
+                a->next_frame_time = now;
+                continue;
+            }
+
+            // ค้นหาตำแหน่งเริ่มต้นของ JPEG Header (SOI: 0xFFD8)
+            size_t offset = 0;
+            if (!(chunk_len >= 2 && a->vbuf[0] == 0xFF && a->vbuf[1] == 0xD8)) {
+                while (offset + 1 < (size_t)chunk_len) {
+                    if (a->vbuf[offset] == 0xFF && a->vbuf[offset + 1] == 0xD8) break;
+                    offset++;
+                }
+                if (offset + 1 >= (size_t)chunk_len) {
+                    offset = 0;
+                }
+            }
+
+            // ส่งข้อมูลภาพไปยัง Callback (ถอดรหัส JPEG และส่งเข้า LVGL นอก Lock)
+            if (a->video_cb) {
+                a->frames_shown++;
+                a->video_cb(a->vbuf + offset, (size_t)chunk_len - offset,
+                            cur_frame_idx, a->cfg.user_ctx);
+            }
+
+            // ★ คำนวณเวลาใหม่ "หลัง" จากที่ถอดรหัสภาพเสร็จสิ้นแล้วจริงๆ
+            int64_t now_after = esp_timer_get_time();
+            int64_t diff = a->next_frame_time - now_after;
+
+            if (diff > 1000) {
+                vTaskDelay(pdMS_TO_TICKS(diff / 1000));
+            } else if (diff > 0) {
+                esp_rom_delay_us((uint32_t)diff);
+            } else {
+                // หากเวลาการถอดรหัสเกินรอบเฟรมไปแล้ว ห้าม Delay เด็ดขาด
+                // และถ้าช้าเกิน 1 เฟรม ให้ขยับ Pacing Clock ทันทีเพื่อไม่ให้สะสมความหน่วง
+                if (-diff > a->frame_interval_us) {
+                    a->next_frame_time = now_after;
+                }
+            }
+
+            // หากสะสมความหน่วงเกิน 1 วินาที ให้ทำ Resync
+            if (late > 1000000) {
+                ESP_LOGW(TAG, "pacing resync: %.1f s behind", (double)late / 1e6);
+                a->next_frame_time = now;
+                a->dropped_frames = 0;
+            }
+        } 
+        
     }
 
     a->task_hdl = NULL;
@@ -504,29 +800,28 @@ esp32_avidec_err_t esp32_avidec_set_event_cb(esp32_avidec_t *avi, esp32_avidec_e
     return ESP32_AVIDEC_OK;
 }
 
-esp32_avidec_err_t esp32_avidec_play(esp32_avidec_t *avi) {
-    if (!avi || !avi->avi) return ESP32_AVIDEC_ERR_INVALID_STATE;
-    if (avi->state == ESP32_AVIDEC_STATE_PLAYING) return ESP32_AVIDEC_OK;
-
-    xSemaphoreTake(avi->lock, portMAX_DELAY);
-    avi->state = ESP32_AVIDEC_STATE_PLAYING;
-    if (avi->event_cb) {
-        avi->event_cb(ESP32_AVIDEC_EVENT_STATE_CHANGED, (void *)(uintptr_t)avi->state, avi->cfg.user_ctx);
-    }
-    xSemaphoreGive(avi->lock);
-    return ESP32_AVIDEC_OK;
-}
-
 esp32_avidec_err_t esp32_avidec_pause(esp32_avidec_t *avi) {
     if (!avi) return ESP32_AVIDEC_ERR_INVALID_STATE;
     if (avi->state == ESP32_AVIDEC_STATE_PAUSED) return ESP32_AVIDEC_OK;
 
-    xSemaphoreTake(avi->lock, portMAX_DELAY);
+    // เปลี่ยนสถานะทันทีแบบ Non-blocking
     avi->state = ESP32_AVIDEC_STATE_PAUSED;
+
     if (avi->event_cb) {
         avi->event_cb(ESP32_AVIDEC_EVENT_STATE_CHANGED, (void *)(uintptr_t)avi->state, avi->cfg.user_ctx);
     }
-    xSemaphoreGive(avi->lock);
+    return ESP32_AVIDEC_OK;
+}
+
+esp32_avidec_err_t esp32_avidec_play(esp32_avidec_t *avi) {
+    if (!avi || !avi->avi) return ESP32_AVIDEC_ERR_INVALID_STATE;
+    if (avi->state == ESP32_AVIDEC_STATE_PLAYING) return ESP32_AVIDEC_OK;
+
+    avi->state = ESP32_AVIDEC_STATE_PLAYING;
+
+    if (avi->event_cb) {
+        avi->event_cb(ESP32_AVIDEC_EVENT_STATE_CHANGED, (void *)(uintptr_t)avi->state, avi->cfg.user_ctx);
+    }
     return ESP32_AVIDEC_OK;
 }
 

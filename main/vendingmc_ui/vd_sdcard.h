@@ -23,7 +23,6 @@ extern "C" {
 #define _VD_SD_MMC_D3   GPIO_NUM_42
 
 #define _VD_SD_PROFILE_TRY_COUNT 3
-#define _VD_SD_MOUNT_POINT  "0:"
 
 typedef struct _vd_sd_profile_t {
   const char *name;
@@ -49,6 +48,8 @@ esp_err_t vd_sd_mount(void);
  * @brief Unmount และ Deinit ฮาร์ดแวร์ SD Card แบบบรรทัดเดียว
  */
 esp_err_t vd_sd_unmount(void);
+
+int8_t vd_sd_get_pdrv(void);
 
 /* --- ฟังก์ชันจัดการไฟล์ --- */
 

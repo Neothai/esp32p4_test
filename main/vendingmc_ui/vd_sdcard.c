@@ -5,6 +5,7 @@
 #include "sdmmc_cmd.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "diskio.h"
 
 #define TAG "VD_SD"
 
@@ -13,6 +14,7 @@ static sdmmc_host_t _sd_mmc_host   = SDMMC_HOST_DEFAULT();
 static sdmmc_card_t _sd_mmc_card;
 static FATFS _sd_mmc_fatfs;
 static bool _internal_sd_host_init = false;
+static int8_t _sd_mmc_pdrv = -1;
 
 static const _vd_sd_profile_t _sd_mmc_profiles[] = {
   //{"UHS-I SDR50 (100MHz 4-bit)", SDMMC_FREQ_SDR50,     1.8f, SDMMC_SLOT_FLAG_UHS1, 4},
@@ -23,6 +25,39 @@ static const _vd_sd_profile_t _sd_mmc_profiles[] = {
 };
 
 #define _VD_SD_MMC_PROFILE_COUNT (sizeof(_sd_mmc_profiles) / sizeof(_sd_mmc_profiles[0]))
+
+static DSTATUS sd_init_cb(void *ctx) { return 0; }
+static DSTATUS sd_status_cb(void *ctx) { return (ctx == NULL) ? STA_NOINIT : 0; }
+
+static DRESULT sd_read_cb(void *ctx, BYTE *buff, LBA_t sector, UINT count) {
+    sdmmc_card_t *card = (sdmmc_card_t *)ctx;
+    return (sdmmc_read_sectors(card, buff, (size_t)sector, (size_t)count) == ESP_OK) ? RES_OK : RES_ERROR;
+}
+
+static DRESULT sd_write_cb(void *ctx, const BYTE *buff, LBA_t sector, UINT count) {
+    sdmmc_card_t *card = (sdmmc_card_t *)ctx;
+    return (sdmmc_write_sectors(card, buff, (size_t)sector, (size_t)count) == ESP_OK) ? RES_OK : RES_ERROR;
+}
+
+static DRESULT sd_ioctl_cb(void *ctx, BYTE cmd, void *buff) {
+    sdmmc_card_t *card = (sdmmc_card_t *)ctx;
+    if (!card) return RES_NOTRDY;
+    switch (cmd) {
+        case CTRL_SYNC: return RES_OK;
+        case GET_SECTOR_COUNT: *(LBA_t *)buff = (LBA_t)card->csd.capacity; return RES_OK;
+        case GET_SECTOR_SIZE: *(WORD *)buff = (WORD)card->csd.sector_size; return RES_OK;
+        case GET_BLOCK_SIZE: *(DWORD *)buff = 128; return RES_OK;
+        default: return RES_PARERR;
+    }
+}
+
+static const diskio_ops_t s_sd_ops = {
+    .init = sd_init_cb,
+    .status = sd_status_cb,
+    .read = sd_read_cb,
+    .write = sd_write_cb,
+    .ioctl = sd_ioctl_cb,
+};
 
 void _vd_sd_delay(uint32_t ms){
   vTaskDelay(pdMS_TO_TICKS(ms));
@@ -114,20 +149,35 @@ esp_err_t vd_sd_mount(void) {
     return err;
   }
 
-  diskio_register_sd_card(&_sd_mmc_card);
+  if (diskio_register_driver(&s_sd_ops, &_sd_mmc_card, (BYTE*)&_sd_mmc_pdrv) != RES_OK) {
+    ESP_LOGE(TAG, "Failed to initialize SD card in all profiles! (Card missing or broken)");
+    return ESP_ERR_INVALID_RESPONSE;
+  }
 
-  FRESULT fr = f_mount(&_sd_mmc_fatfs, _VD_SD_MOUNT_POINT, 1);
+  char path[8];
+  snprintf(path, sizeof(path), "%u:", _sd_mmc_pdrv);
+
+  FRESULT fr = f_mount(&_sd_mmc_fatfs, path, 1);
   if (fr != FR_OK) {
     ESP_LOGI(TAG, "Mount SD filesystem fail, error: %d", fr);
     return ESP_FAIL;
   }
 
+  ESP_LOGI(TAG, "Mount SD success! pdrv = %d", _sd_mmc_pdrv);
+
   return ESP_OK;
 }
 
 esp_err_t vd_sd_unmount(void) {
-  f_unmount(_VD_SD_MOUNT_POINT);
+  char path[8];
+  snprintf(path, sizeof(path), "%u:", _sd_mmc_pdrv);
+
+  if(_sd_mmc_pdrv > -1) f_unmount(path);
   return sdmmc_host_deinit_slot(_sd_mmc_host.slot);
+}
+
+int8_t vd_sd_get_pdrv(void){
+  return (!_internal_sd_host_init || _sd_mmc_pdrv < 0) ? -1 : _sd_mmc_pdrv;
 }
 
 esp_err_t vd_sd_read_file(const char *path, uint8_t **out_buf, size_t *out_size, bool prefer_psram) {

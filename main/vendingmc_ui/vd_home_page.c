@@ -456,6 +456,7 @@ vd_home_page_t *vd_home_page_create(lv_obj_t *parant, uint16_t display_w, uint16
   return hp;
 }
 
+// แปลงภาพสินค้ามาเป็นขนาดกว้าง 204 สูง 154 แล้วเอามาส่งให้ vd_img_jpg_dec() ได้เลย ขนาดมันจะพอดีกับการ์ด
 vd_prod_card_t *vd_prod_card_create(vd_home_page_t *hp, const char *prod_name, float prod_full_price, float prod_disc_price, const void* prod_img_src, vd_prod_card_clicked_cb_t card_cb){
   if(!hp || !hp->prod_flex) return NULL;
   if(!prod_name || prod_full_price <= 0.0) {
@@ -532,7 +533,7 @@ vd_prod_card_t *vd_prod_card_create(vd_home_page_t *hp, const char *prod_name, f
   card->prod_img = lv_image_create(card->main);
 
   lv_image_set_src                  (card->prod_img, prod_img_src);
-  lv_obj_align                      (card->prod_img, LV_ALIGN_TOP_MID, 0, -40);
+  lv_obj_align                      (card->prod_img, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_overflow_visible       (card->prod_img, false);
   lv_image_set_antialias            (card->prod_img, false);
   lv_image_set_blend_mode           (card->prod_img, LV_BLEND_MODE_NORMAL);

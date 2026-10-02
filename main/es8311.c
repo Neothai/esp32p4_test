@@ -53,6 +53,8 @@ void es8311_codec_init(i2c_master_bus_handle_t bus_handle) {
 
     // 4. ตั้งค่าฟอร์แมตสัญญาณ I2S (Standard Philips, 16-bit)
     es8311_write_reg(0x09, 0x0C); // SDP IN: 16-bit I2S
+    // ปรับเป็น 32-bit I2S: (Bit [4:2] = 100b = 32-bit)
+    //es8311_write_reg(0x09, 0x10); // SDP IN: 32-bit I2S Format
     es8311_write_reg(0x0A, 0x0C); // SDP OUT: 16-bit I2S
 
     // 5. สลับเส้นทางเสียงจาก DAC ไปยังขา Output (จุดสำคัญ!)
@@ -66,4 +68,26 @@ void es8311_codec_init(i2c_master_bus_handle_t bus_handle) {
     es8311_write_reg(0x00, 0x80); // CSM_ON = 1
 
     ESP_LOGI(TAG_ES8311, "ES8311 Active & Unmuted successfully!");
+}
+
+/**
+ * @brief ปรับระดับความดังเสียง (0 - 100%)
+ * @param volume_pct 0 = เงียบสุด (-95.5 dB), 100 = ดังปกติระดับ 0 dB
+ */
+void es8311_set_volume(uint8_t volume_pct) {
+    if (volume_pct > 100) volume_pct = 100;
+    // แปลงสเกล 0-100% เป็นช่วง 0x00 ถึง 0xBF (0 dB ไม่แตกพร่า)
+    uint8_t reg_val = (uint8_t)((volume_pct * 0xBF) / 100);
+    es8311_write_reg(0x32, reg_val);
+}
+
+/**
+ * @brief สั่ง Mute / Unmute เสียง
+ */
+void es8311_set_mute(bool mute) {
+    if (mute) {
+        es8311_write_reg(0x31, 0x60);     // Soft Mute DAC
+    } else {
+        es8311_write_reg(0x31, 0x00);     // Unmute DAC
+    }
 }

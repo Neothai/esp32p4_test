@@ -108,7 +108,7 @@ typedef struct esp32_avidec_t {
     .video_buf_size  = 128 * 1024,      \
     .audio_buf_size  = 4096,            \
     .read_cache_size = 128 * 1024,      \
-    .task_priority   = 5,               \
+    .task_priority   = 8,               \
     .task_core_id    = 1,               \
     .task_stack      = 8192,            \
     .user_ctx        = NULL             \

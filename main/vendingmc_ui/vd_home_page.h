@@ -10,10 +10,12 @@
 #include "vd_anim_cb.h"
 #include "vd_utils.h"
 #include "misc/cache/instance/lv_image_cache.h"
+//#include "vd_font_manager.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 
 LV_FONT_DECLARE(anuphan_14);
 LV_FONT_DECLARE(anuphan_16);

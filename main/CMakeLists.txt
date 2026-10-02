@@ -20,6 +20,7 @@ idf_component_register(
         esp_lcd
         esp_driver_i2c
         esp_mm
+        esp_driver_ppa
         esp_wifi_remote
         esp_driver_gpio
         esp_driver_sdmmc
@@ -38,15 +39,7 @@ idf_component_register(
         sdmmc 
         esp32_fatfs
         esp32_avidec
+        esp32_usb
         lvgl
+        cjson
 )
-
-#idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
-#if(TARGET ${lvgl_lib})
-#    target_include_directories(${lvgl_lib} PRIVATE 
-#        "${IDF_PATH}/components/esp_driver_ppa/include"
-#        "${IDF_PATH}/components/esp_mm/include"
-#        "${IDF_PATH}/components/esp_hw_support/include"
-#    )
-#    target_link_libraries(${lvgl_lib} PRIVATE idf::esp_driver_ppa idf::esp_mm)
-#endif()

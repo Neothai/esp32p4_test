@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32-P4 SD File Explorer Mockup (1024x600)</title>
+  <style>
+    :root {
+      --bg-main: #0F172A;
+      --bg-panel: #1E293B;
+      --bg-hover: #334155;
+      --bg-card: #182234;
+      --accent: #5B6EF5;
+      --accent-hover: #4A5AE0;
+      --danger: #EF4444;
+      --text-main: #F8FAFC;
+      --text-muted: #94A3B8;
+      --border: #334155;
+      --radius: 12px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-drag: none;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Sarabun", "Anuphan", sans-serif;
+    }
+
+    body {
+      background-color: #020617;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      color: var(--text-main);
+    }
+
+    /* กรอบจำลองหน้าจอ 1024x600 */
+    .screen-frame {
+      width: 1024px;
+      height: 600px;
+      background-color: var(--bg-main);
+      border: 4px solid #334155;
+      border-radius: 16px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Toolbar ด้านบน */
+    .header-bar {
+      height: 64px;
+      background-color: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+    }
+
+    .btn-icon {
+      width: 44px;
+      height: 44px;
+      background-color: var(--bg-hover);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-icon:hover { background-color: #475569; }
+    .btn-icon:active { transform: scale(0.95); }
+    .btn-icon.disabled { opacity: 0.35; pointer-events: none; }
+
+    /* Breadcrumbs Path Bar */
+    .path-container {
+      flex: 1;
+      height: 44px;
+      background-color: var(--bg-main);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 6px;
+      overflow-x: auto;
+    }
+    .breadcrumb-item {
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .breadcrumb-item:hover { color: var(--accent); }
+    .breadcrumb-item.active { color: var(--text-main); font-weight: 600; }
+
+    /* Search & Filters */
+    .search-box {
+      width: 200px;
+      height: 44px;
+      background-color: var(--bg-main);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0 12px;
+      color: var(--text-main);
+      font-size: 14px;
+      outline: none;
+    }
+    .search-box:focus { border-color: var(--accent); }
+
+    /* Workspace Body */
+    .workspace {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Sidebar เมนูด้านซ้าย */
+    .sidebar {
+      width: 220px;
+      background-color: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      gap: 6px;
+    }
+    .sidebar-section {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin: 8px 0 4px 8px;
+    }
+    .sidebar-btn {
+      height: 44px;
+      padding: 0 12px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .sidebar-btn:hover { background-color: var(--bg-hover); color: var(--text-main); }
+    .sidebar-btn.active { background-color: var(--accent); color: white; font-weight: 600; }
+
+    /* Storage Indicator Card */
+    .storage-info {
+      margin-top: auto;
+      background: var(--bg-main);
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .progress-track {
+      height: 6px;
+      background: var(--bg-hover);
+      border-radius: 3px;
+      margin: 6px 0;
+      overflow: hidden;
+    }
+    .progress-fill {
+      width: 42%;
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+    }
+
+    /* Main File Container */
+    .content-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background-color: var(--bg-main);
+    }
+
+    .view-container {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+    }
+
+    /* Grid View Mode */
+    .grid-view {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+      gap: 14px;
+    }
+    .file-card {
+      height: 130px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+    .file-card:hover { border-color: var(--accent); background: var(--bg-panel); }
+    .file-card.selected { border-color: var(--accent); background: rgba(91, 110, 245, 0.18); box-shadow: 0 0 0 2px var(--accent); }
+    .file-icon { font-size: 38px; }
+    .file-name {
+      font-size: 13px;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      width: 100%;
+    }
+    .file-meta { font-size: 11px; color: var(--text-muted); }
+
+    /* List View Mode */
+    .list-view {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .list-header, .list-row {
+      display: grid;
+      grid-template-columns: 44px 1fr 120px 140px;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .list-header {
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 6px;
+    }
+    .list-row {
+      cursor: pointer;
+      height: 48px;
+      background: var(--bg-card);
+      border: 1px solid transparent;
+    }
+    .list-row:hover { background: var(--bg-panel); }
+    .list-row.selected { background: rgba(91, 110, 245, 0.18); border-color: var(--accent); }
+
+    /* Bottom Status Bar */
+    .status-bar {
+      height: 40px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* Modal Dialog */
+    .modal-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      backdrop-filter: blur(2px);
+    }
+    .modal-box {
+      width: 420px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .modal-title { font-size: 18px; font-weight: 600; }
+    .modal-input {
+      height: 44px;
+      background: var(--bg-main);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 12px;
+      color: white;
+      font-size: 14px;
+      outline: none;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .btn {
+      height: 40px;
+      padding: 0 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-secondary { background: var(--bg-hover); color: var(--text-main); }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-danger { background: var(--danger); color: white; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+  <div class="screen-frame">
+    <!-- 1. Header Toolbar -->
+    <header class="header-bar">
+      <button class="btn-icon" id="btn-back" title="ย้อนกลับ" onclick="navigateUp()">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7"/></svg>
+      </button>
+      <button class="btn-icon" id="btn-refresh" title="รีเฟรช" onclick="renderCurrentDir()">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      </button>
+
+      <!-- Path Breadcrumbs -->
+      <div class="path-container" id="breadcrumbs"></div>
+
+      <input type="text" class="search-box" id="search-input" placeholder="ค้นหาไฟล์..." oninput="handleSearch(this.value)">
+
+      <!-- View Switcher -->
+      <button class="btn-icon" id="btn-view" title="สลับมุมมอง Grid/List" onclick="toggleViewMode()">
+        <svg id="view-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      </button>
+
+      <!-- Action Buttons -->
+      <button class="btn-icon" title="สร้างโฟลเดอร์ใหม่" onclick="openNewFolderModal()">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4"/></svg>
+      </button>
+      <button class="btn-icon disabled" id="btn-delete" title="ลบไฟล์ที่เลือก" onclick="deleteSelected()" style="color: var(--danger);">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+      </button>
+    </header>
+
+    <!-- 2. Workspace Body -->
+    <div class="workspace">
+      <!-- Sidebar ทางลัดไดรฟ์และประเภท -->
+      <aside class="sidebar">
+        <div class="sidebar-section">ที่จัดเก็บข้อมูล</div>
+        <div class="sidebar-btn active" onclick="switchRoot('0:')">
+          <span>💾</span> SD Card (0:)
+        </div>
+        <div class="sidebar-btn" onclick="filterType('all')">
+          <span>📁</span> ไฟล์ทั้งหมด
+        </div>
+
+        <div class="sidebar-section">หมวดหมู่ด่วน</div>
+        <div class="sidebar-btn" onclick="filterType('video')">
+          <span>🎬</span> วิดีโอ (.avi)
+        </div>
+        <div class="sidebar-btn" onclick="filterType('image')">
+          <span>🖼️</span> รูปภาพ (.jpg)
+        </div>
+        <div class="sidebar-btn" onclick="filterType('audio')">
+          <span>🎵</span> เสียง (.mp3)
+        </div>
+
+        <div class="storage-info">
+          <div style="display:flex; justify-content:space-between; font-size: 11px;">
+            <span>MicroSD 32GB</span>
+            <span>13.4 GB / 29.8 GB</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill"></div></div>
+          <div style="font-size: 10px; color: var(--text-muted);">Format: FAT32 | 4-bit SDIO</div>
+        </div>
+      </aside>
+
+      <!-- Main File Display -->
+      <main class="content-area">
+        <div class="view-container" id="file-container">
+          <!-- Item list / grid will be rendered here -->
+        </div>
+
+        <!-- 3. Status Bar ด้านล่าง -->
+        <footer class="status-bar">
+          <span id="status-left">0 รายการ</span>
+          <span id="status-selected">ยังไม่ได้เลือกไฟล์</span>
+          <span>ESP32-P4 FatFS Bridge</span>
+        </footer>
+      </main>
+    </div>
+  </div>
+
+  <!-- Create New Folder Modal -->
+  <div class="modal-overlay" id="new-folder-modal">
+    <div class="modal-box">
+      <div class="modal-title">สร้างโฟลเดอร์ใหม่</div>
+      <input type="text" class="modal-input" id="folder-name-input" placeholder="ระบุชื่อโฟลเดอร์ เช่น media, logs">
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">ยกเลิก</button>
+        <button class="btn btn-primary" onclick="confirmNewFolder()">สร้าง</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* =========================================================================
+     * จำลองโครงสร้างไฟล์ของ SD Card (Mock Virtual File System)
+     * ========================================================================= */
+    const vfs = {
+      "0:": [
+        { name: "media", isDir: true, size: 0, date: "2026-09-20 14:10" },
+        { name: "prod_img", isDir: true, size: 0, date: "2026-09-21 09:20" },
+        { name: "system", isDir: true, size: 0, date: "2026-09-18 10:00" },
+        { name: "config.json", isDir: false, size: 2048, date: "2026-09-22 11:45" },
+        { name: "boot_log.txt", isDir: false, size: 14520, date: "2026-09-23 08:30" }
+      ],
+      "0:/media": [
+        { name: "demo_h264.avi", isDir: false, size: 38450124, date: "2026-09-19 18:22" },
+        { name: "promo_loop.avi", isDir: false, size: 85400192, date: "2026-09-20 09:15" },
+        { name: "bg_music.mp3", isDir: false, size: 4521098, date: "2026-09-15 12:00" },
+        { name: "chime.mp3", isDir: false, size: 84210, date: "2026-09-16 16:30" }
+      ],
+      "0:/prod_img": [
+        { name: "coffee_hot.jpg", isDir: false, size: 86528, date: "2026-09-21 10:02" },
+        { name: "greentea_ice.jpg", isDir: false, size: 86528, date: "2026-09-21 10:04" },
+        { name: "milk_tea.jpg", isDir: false, size: 86528, date: "2026-09-21 10:05" },
+        { name: "banner_promo.jpg", isDir: false, size: 124500, date: "2026-09-21 11:20" }
+      ],
+      "0:/system": [
+        { name: "firmware.bin", isDir: false, size: 1845120, date: "2026-09-10 17:00" },
+        { name: "app_manifest.bin", isDir: false, size: 4096, date: "2026-09-10 17:00" }
+      ]
+    };
+
+    let currentPath = "0:";
+    let currentViewMode = "grid"; // 'grid' หรือ 'list'
+    let selectedItem = null;
+    let activeFilter = "all";
+    let searchQuery = "";
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return "--";
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function getFileIcon(item) {
+      if (item.isDir) return "📁";
+      const ext = item.name.split('.').pop().toLowerCase();
+      switch (ext) {
+        case "avi": case "mp4": return "🎬";
+        case "jpg": case "jpeg": case "png": return "🖼️";
+        case "mp3": case "wav": return "🎵";
+        case "json": case "txt": return "📄";
+        case "bin": return "⚙️";
+        default: return "📦";
+      }
+    }
+
+    /* สลับมุมมอง Grid / List */
+    function toggleViewMode() {
+      currentViewMode = currentViewMode === "grid" ? "list" : "grid";
+      renderCurrentDir();
+    }
+
+    /* อัปเดตแถบ Breadcrumbs */
+    function renderBreadcrumbs() {
+      const el = document.getElementById("breadcrumbs");
+      el.innerHTML = "";
+      const parts = currentPath.split("/");
+      let buildPath = "";
+
+      parts.forEach((p, idx) => {
+        buildPath += (idx === 0 ? p : "/" + p);
+        const thisPath = buildPath;
+        const span = document.createElement("span");
+        span.className = `breadcrumb-item ${idx === parts.length - 1 ? 'active' : ''}`;
+        span.textContent = p;
+        span.onclick = () => {
+          currentPath = thisPath;
+          selectedItem = null;
+          renderCurrentDir();
+        };
+        el.appendChild(span);
+
+        if (idx < parts.length - 1) {
+          const sep = document.createElement("span");
+          sep.className = "breadcrumb-item";
+          sep.textContent = "/";
+          el.appendChild(sep);
+        }
+      });
+
+      document.getElementById("btn-back").classList.toggle("disabled", currentPath === "0:");
+    }
+
+    /* เรนเดอร์รายการไฟล์และโฟลเดอร์ */
+    function renderCurrentDir() {
+      renderBreadcrumbs();
+      const container = document.getElementById("file-container");
+      container.innerHTML = "";
+
+      let items = vfs[currentPath] || [];
+
+      // Filter นามสกุล
+      if (activeFilter !== "all") {
+        items = items.filter(it => {
+          if (it.isDir) return false;
+          const ext = it.name.split('.').pop().toLowerCase();
+          if (activeFilter === "video") return ext === "avi";
+          if (activeFilter === "image") return ext === "jpg" || ext === "png";
+          if (activeFilter === "audio") return ext === "mp3" || ext === "wav";
+          return true;
+        });
+      }
+
+      // Filter ช่อง Search
+      if (searchQuery) {
+        items = items.filter(it => it.name.toLowerCase().includes(searchQuery.toLowerCase()));
+      }
+
+      // อัปเดต Status Bar
+      document.getElementById("status-left").textContent = `${items.length} รายการ`;
+      updateSelectionUI();
+
+      if (currentViewMode === "grid") {
+        const grid = document.createElement("div");
+        grid.className = "grid-view";
+
+        items.forEach(it => {
+          const card = document.createElement("div");
+          card.className = `file-card ${selectedItem === it.name ? 'selected' : ''}`;
+          card.innerHTML = `
+            <div class="file-icon">${getFileIcon(it)}</div>
+            <div class="file-name" title="${it.name}">${it.name}</div>
+            <div class="file-meta">${it.isDir ? 'โฟลเดอร์' : formatBytes(it.size)}</div>
+          `;
+          card.onclick = () => selectItem(it.name);
+          card.ondblclick = () => handleItemOpen(it);
+          grid.appendChild(card);
+        });
+        container.appendChild(grid);
+      } else {
+        const list = document.createElement("div");
+        list.className = "list-view";
+        list.innerHTML = `
+          <div class="list-header">
+            <span></span>
+            <span>ชื่อไฟล์</span>
+            <span>ขนาด</span>
+            <span>วันที่แก้ไข</span>
+          </div>
+        `;
+
+        items.forEach(it => {
+          const row = document.createElement("div");
+          row.className = `list-row ${selectedItem === it.name ? 'selected' : ''}`;
+          row.innerHTML = `
+            <span style="font-size: 20px;">${getFileIcon(it)}</span>
+            <span class="file-name" style="text-align: left;">${it.name}</span>
+            <span style="color: var(--text-muted);">${formatBytes(it.size)}</span>
+            <span style="color: var(--text-muted); font-size: 12px;">${it.date}</span>
+          `;
+          row.onclick = () => selectItem(it.name);
+          row.ondblclick = () => handleItemOpen(it);
+          list.appendChild(row);
+        });
+        container.appendChild(list);
+      }
+    }
+
+    function selectItem(name) {
+      selectedItem = selectedItem === name ? null : name;
+      updateSelectionUI();
+      renderCurrentDir();
+    }
+
+    function updateSelectionUI() {
+      const delBtn = document.getElementById("btn-delete");
+      const statusTxt = document.getElementById("status-selected");
+
+      if (selectedItem) {
+        delBtn.classList.remove("disabled");
+        statusTxt.textContent = `เลือกแล้ว: ${selectedItem}`;
+      } else {
+        delBtn.classList.add("disabled");
+        statusTxt.textContent = `ยังไม่ได้เลือกไฟล์`;
+      }
+    }
+
+    function handleItemOpen(item) {
+      if (item.isDir) {
+        currentPath = currentPath + "/" + item.name;
+        selectedItem = null;
+        renderCurrentDir();
+      } else {
+        alert(`จำลองการเปิดไฟล์: ${currentPath}/${item.name}\n(ส่งเข้าฟังก์ชัน vd_avi_player หรือ vd_image_dec ของ ESP32)`);
+      }
+    }
+
+    function navigateUp() {
+      if (currentPath === "0:") return;
+      const parts = currentPath.split("/");
+      parts.pop();
+      currentPath = parts.join("/");
+      selectedItem = null;
+      renderCurrentDir();
+    }
+
+    function filterType(type) {
+      activeFilter = type;
+      renderCurrentDir();
+    }
+
+    function switchRoot(root) {
+      currentPath = root;
+      selectedItem = null;
+      activeFilter = "all";
+      renderCurrentDir();
+    }
+
+    function handleSearch(val) {
+      searchQuery = val.trim();
+      renderCurrentDir();
+    }
+
+    function deleteSelected() {
+      if (!selectedItem) return;
+      if (confirm(`คุณต้องการลบ "${selectedItem}" ใช่หรือไม่?`)) {
+        vfs[currentPath] = (vfs[currentPath] || []).filter(it => it.name !== selectedItem);
+        selectedItem = null;
+        renderCurrentDir();
+      }
+    }
+
+    /* Modal ควบคุมโฟลเดอร์ใหม่ */
+    function openNewFolderModal() {
+      document.getElementById("new-folder-modal").style.display = "flex";
+      document.getElementById("folder-name-input").value = "";
+      document.getElementById("folder-name-input").focus();
+    }
+    function closeModal() {
+      document.getElementById("new-folder-modal").style.display = "none";
+    }
+    function confirmNewFolder() {
+      const name = document.getElementById("folder-name-input").value.trim();
+      if (!name) return;
+      if (!vfs[currentPath]) vfs[currentPath] = [];
+
+      vfs[currentPath].push({
+        name: name,
+        isDir: true,
+        size: 0,
+        date: "2026-09-23 15:00"
+      });
+      vfs[`${currentPath}/${name}`] = [];
+
+      closeModal();
+      renderCurrentDir();
+    }
+
+    // เริ่มต้นระบบ
+    renderCurrentDir();
+  </script>
+</body>
+</html>
