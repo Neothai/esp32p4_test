@@ -1,0 +1,3839 @@
+#include <stdio.h>
+#include <string.h>
+#include <strings.h>
+#include <time.h>
+#include "esp32_http_req.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_http_client.h"
+#include "esp32_wifi.h"
+#include "sd_protocol_types.h"
+#include "driver/sdmmc_host.h"
+#include "ff.h"
+#include "diskio.h"
+#include "driver/i2c_master.h"
+#include "driver/spi_master.h"
+
+#include "driver/gpio.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_ldo_regulator.h"
+#include "esp_dma_utils.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_lcd_ek79007.h"
+#include "esp_idf_version.h"
+#include "lvgl.h"
+#include "esp_lvgl_port.h"
+#include "demos/lv_demos.h"
+
+#include "driver/jpeg_decode.h"
+#include "freertos/ringbuf.h"
+#include "esp32_mp3dec.h"
+#include "helix/pub/mp3dec.h"
+#include "esp32_avidec.h"
+#include "es8311.c"
+
+#include "driver/i2c_master.h"
+#include "esp_lcd_touch_gt911.h"
+#include <cJSON.h>
+
+#include "vendingmc_ui/lvgl_thai_kb.h"
+#include "vendingmc_ui/vd_avi_player.h"
+#include "vendingmc_ui/vd_home_page.h"
+#include "vendingmc_ui/vd_image_dec.h"
+#include "vendingmc_ui/vd_payment_ui.h"
+#include "vendingmc_ui/vd_toast_notify.h"
+#include "vendingmc_ui/vd_task_mgr.h"
+#include "vendingmc_ui/vd_sdcard.h"
+#include "vendingmc_ui/vd_menu.h"
+
+#include "usbd_core.h"
+#include "usbd_hid.h"
+
+/*
+#include "vendingmc_ui/fonts/anuphan_reg_ttf.h"
+#include "vendingmc_ui/fonts/anuphan_med_ttf.h"
+#include "vendingmc_ui/fonts/anuphan_semi_bold_ttf.h"
+#include "vendingmc_ui/fonts/anuphan_bold_ttf.h"
+#include "vendingmc_ui/vd_font_manager.h"
+*/
+
+const char *qr_b64data = "data:image/png;base64,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";
+lv_image_dsc_t qr_img_dsc;
+uint8_t *raw_qr_img;
+
+LV_FONT_DECLARE(anuphan_12);
+LV_FONT_DECLARE(anuphan_14);
+LV_FONT_DECLARE(anuphan_med_14);
+LV_FONT_DECLARE(anuphan_16);
+LV_FONT_DECLARE(anuphan_med_16);
+LV_FONT_DECLARE(anuphan_bold_16);
+LV_FONT_DECLARE(anuphan_semi_bold_16);
+//LV_FONT_DECLARE(anuphan_18);
+extern lv_font_t anuphan_18;
+LV_FONT_DECLARE(anuphan_med_18);
+LV_FONT_DECLARE(anuphan_bold_18);
+LV_FONT_DECLARE(anuphan_semi_bold_18);
+LV_FONT_DECLARE(anuphan_20);
+LV_FONT_DECLARE(anuphan_bold_20);
+LV_FONT_DECLARE(anuphan_22);
+LV_FONT_DECLARE(anuphan_med_22);
+LV_FONT_DECLARE(anuphan_bold_22);
+LV_FONT_DECLARE(anuphan_bold_24);
+LV_FONT_DECLARE(anuphan_bold_26);
+
+LV_FONT_DECLARE(font_awesome_20);
+
+LV_IMG_DECLARE(greentea);
+LV_IMG_DECLARE(nvdm200_51);
+LV_IMG_DECLARE(cart250_219);
+LV_IMG_DECLARE(qr120_120);
+LV_IMG_DECLARE(cash167_120);
+LV_IMG_DECLARE(prompt_pay200_67);
+LV_IMG_DECLARE(IMG_20260820_123647);
+
+#define PIN_NUM_CLK    GPIO_NUM_43
+#define PIN_NUM_CMD    GPIO_NUM_44
+#define PIN_NUM_D0     GPIO_NUM_39
+#define PIN_NUM_D1     GPIO_NUM_40
+#define PIN_NUM_D2     GPIO_NUM_41
+#define PIN_NUM_D3     GPIO_NUM_42
+
+// ขา I2S สำหรับ ES8311
+#define I2S_MCLK_IO       GPIO_NUM_13
+#define I2S_BCLK_IO       GPIO_NUM_12
+#define I2S_WS_IO         GPIO_NUM_10
+#define I2S_DOUT_IO       GPIO_NUM_9
+
+// ขาเปิดเพาเวอร์แอมป์ลำโพง (ขึ้นอยู่กับแบบวงจรของบอร์ด เช่น GPIO 26, 53 หรือ 45)
+#define PA_ENABLE_GPIO    GPIO_NUM_53
+
+#define BENCH_FILE_PATH   "0:/bench.tmp"
+#define BENCH_TOTAL_BYTES (64 * 1024 * 1024)
+#define BENCH_CHUNK_SIZE  (64 * 1024)
+
+#define TAG_FS "SD_FILES"
+#define MAX_DEPTH    6     // จำกัดความลึกสูงสุดไม่เกิน 6 ระดับชั้น
+#define MAX_PATH_LEN 512
+
+// ── กำหนดขา GPIO ของ Touch IC ตามบอร์ดของคุณ ──
+#define TOUCH_I2C_SDA         GPIO_NUM_7
+#define TOUCH_I2C_SCL         GPIO_NUM_8
+#define TOUCH_PIN_INT         GPIO_NUM_NC
+#define TOUCH_PIN_RST         GPIO_NUM_23
+
+#define TAG "LVGL_P4"
+
+#define LCD_H_RES              1024
+#define LCD_V_RES              600
+#define PIN_NUM_BK_LIGHT       GPIO_NUM_32
+#define PIN_NUM_LCD_RST        GPIO_NUM_33
+
+i2c_master_bus_handle_t i2c_bus_handle;
+lv_display_t *display;
+vd_home_page_t *vd_home_page;
+vd_payment_opt_dialog_t *dialog;
+bool __start_qr = false;
+bool __sd_ok = true;
+
+static esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
+static esp_lcd_panel_handle_t panel_handle = NULL;
+static esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL;
+
+void log_system_memory(void) {
+    // 1. ดึงค่าหน่วยความจำจากระดับฮาร์ดแวร์ด้วย ESP-IDF API
+    size_t free_heap      = esp_get_free_heap_size();
+    size_t min_free_heap  = esp_get_minimum_free_heap_size();
+    size_t internal_free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t psram_free     = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+    size_t total_internal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    size_t total_psram    = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    size_t total_heap     = total_internal + total_psram;
+
+    // คำนวณเปอร์เซ็นต์การใช้งาน (Usage %)
+    // ป้องกันการหารด้วย 0 (Division by Zero) ในกรณีที่ไม่มี PSRAM หรือระบบยังไม่พร้อม
+    float internal_used_pct = (total_internal > 0) ? (((float)(total_internal - internal_free) / total_internal) * 100.0f) : 0.0f;
+    float psram_used_pct    = (total_psram > 0)    ? (((float)(total_psram - psram_free) / total_psram) * 100.0f) : 0.0f;
+    float heap_used_pct     = (total_heap > 0)     ? (((float)(total_heap - free_heap) / total_heap) * 100.0f) : 0.0f;
+
+    // 2. เตรียมบัฟเฟอร์แปลงข้อมูลตัวเลขให้เป็นข้อความที่อ่านง่าย (ขยายขนาดบัฟเฟอร์เพื่อรองรับข้อความ % ที่เพิ่มเข้ามา)
+    char str_free[60];
+    char str_min[60];
+    char str_internal[60];
+    char str_psram[60];
+
+    // แปลงหน่วยเป็น KB และใส่ % การใช้งานเข้าไปด้วย
+    snprintf(str_free, sizeof(str_free), "%zu bytes (%.1f KB) | Used: %.1f%%", free_heap, free_heap / 1024.0, heap_used_pct);
+    snprintf(str_min, sizeof(str_min), "%zu bytes (%.1f KB)", min_free_heap, min_free_heap / 1024.0);
+    snprintf(str_internal, sizeof(str_internal), "%zu bytes (%.1f KB) | Used: %.1f%%", internal_free, internal_free / 1024.0, internal_used_pct);
+
+    if (total_psram > 0) {
+        snprintf(str_psram, sizeof(str_psram), "%zu bytes (%.1f KB) | Used: %.1f%%", psram_free, psram_free / 1024.0, psram_used_pct);
+    } else {
+        snprintf(str_psram, sizeof(str_psram), "0 bytes (Not Available)");
+    }
+
+    // 3. พ่นตาราง Unicode ออกทาง Serial Monitor
+    // ขยายความกว้างคอลัมน์ขวาจาก 40 เป็น 50 ตัวอักษร เพื่อให้รองรับข้อความเปอร์เซ็นต์ที่เพิ่มขึ้นโดยไม่ล้นบรรทัด
+    ESP_LOGI(TAG,
+             "\r\n"
+             "┌──────────────────────┬──────────────────────────────────────────────────┐\r\n"
+             "│ %-20s │ %-48s │\r\n" // ปรับสเปซเผื่อเส้นขอบตาราง
+             "├──────────────────────┼──────────────────────────────────────────────────┤\r\n"
+             "│ %-20s │ %-48s │\r\n"
+             "│ %-20s │ %-48s │\r\n"
+             "│ %-20s │ %-48s │\r\n"
+             "│ %-20s │ %-48s │\r\n"
+             "└──────────────────────┴──────────────────────────────────────────────────┘",
+             "Memory Parameter", "Available Status",
+             "Current Free Heap", str_free,
+             "Min Ever Free Heap", str_min,
+             "Internal DRAM Free", str_internal,
+             "PSRAM (SPIRAM) Free", str_psram);
+}
+
+/**
+ * @brief พิมพ์ค่า Stack คงเหลือต่ำสุดที่เคยเกิดขึ้น (High Water Mark)
+ * @param tag ข้อความระบุจุดที่เรียก เช่น "APP_MAIN", "LVGL" (ใส่ NULL ได้)
+ * @param target_task TaskHandle_t ที่ต้องการเช็ค (ส่ง NULL เพื่อเช็ค Task ตัวเอง)
+ */
+void check_task_stack(const char *tag, TaskHandle_t target_task) {
+    TaskHandle_t hdl = target_task ? target_task : xTaskGetCurrentTaskHandle();
+    const char *task_name = pcTaskGetName(hdl);
+
+    // ใน ESP-IDF ฟังก์ชันนี้จะคืนค่าเป็น "ไบต์ (Bytes)" โดยตรง
+    UBaseType_t min_free_bytes = uxTaskGetStackHighWaterMark(hdl);
+
+    ESP_LOGI(tag ? tag : "STACK", "[%s] Min Free Stack: %u bytes", 
+             task_name, (unsigned int)min_free_bytes);
+}
+
+/* Thai Upper Vowels (สระบนและเครื่องหมายบน) */
+#define THAI_MAI_HAN_AKAT     0x0E31  // ไม้หันอากาศ
+#define THAI_SARA_I           0x0E34  // สระอิ
+#define THAI_SARA_II          0x0E35  // สระอี
+#define THAI_SARA_UE          0x0E36  // สระอึ
+#define THAI_SARA_UEE         0x0E37  // สระอือ
+#define THAI_MAI_TAIKHU       0x0E47  // ไม้ไต่คู้
+#define THAI_NIKHAHIT         0x0E4D  // นิคหิต (หยาดน้ำค้าง)
+#define THAI_YAMAKKAN         0x0E4E  // ยามักการ
+
+/* Thai Tone Marks & Diacritics (วรรณยุกต์และเครื่องหมายพิเศษบน) */
+#define THAI_MAI_EK           0x0E48  // ไม้เอก
+#define THAI_MAI_THO          0x0E49  // ไม้โท
+#define THAI_MAI_TRI          0x0E4A  // ไม้ตรี
+#define THAI_MAI_CHATTAWA     0x0E4B  // ไม้จัตวา
+#define THAI_THANTHAKHAT      0x0E4C  // ทัณฑฆาต (ตัวการันต์)
+
+/* Thai Lower Vowels (สระล่างและเครื่องหมายล่าง) */
+#define THAI_SARA_U           0x0E38  // สระอุ
+#define THAI_SARA_UU          0x0E39  // สระอู
+#define THAI_PHINTHU          0x0E3A  // พินทุ (จุดล่างคำบาลี)
+
+/* Thai Base Level Vowels & Symbols (สระระดับบรรทัดและเครื่องหมาย) */
+#define THAI_SARA_A           0x0E30  // สระอะ
+#define THAI_SARA_AA          0x0E32  // สระอา
+#define THAI_SARA_AM          0x0E33  // สระอำ
+#define THAI_LAKKHANGYAO      0x0E45  // ลากข้างยาว
+#define THAI_MAIYAMOK         0x0E46  // ไม้ยมก
+#define THAI_SARA_E           0x0E40  // สระเอ
+#define THAI_SARA_AE          0x0E41  // สระแอ
+#define THAI_SARA_O           0x0E42  // สระโอ
+#define THAI_SARA_AI_MAIMUAN  0x0E43  // สระใอไม้ม้วน
+#define THAI_SARA_AI_MAIMALAI 0x0E44  // สระไอไม้มลาย
+
+#define THAI_CHAR_LLVL        0x00    // ตัวล่าง
+#define THAI_CHAR_LVL0        0x01    // ตัวระดับทั่วไป
+#define THAI_CHAR_LVL1        0x02    // ตัวสูงระดับ 1
+#define THAI_CHAR_LVL1_OR_2   0x03    // ตัวสูงระดับ 1 หรือ 2 ก็ได้ ขึ้นอยู่กับตัวก่อนหน้า
+#define THAI_CHAR_NONE        0x04    // ไม่ใช่อักขระไทย
+
+uint8_t get_thai_char_level(uint32_t unicode){
+  if(!(unicode >= 0x0E00 && unicode <= 0x0E7F)) return THAI_CHAR_NONE;
+  if(unicode >= THAI_SARA_U && unicode <= THAI_PHINTHU) return THAI_CHAR_LLVL;
+  if((unicode >= THAI_MAI_HAN_AKAT && unicode <= THAI_SARA_UEE) || unicode == THAI_MAI_TAIKHU
+   || unicode == THAI_NIKHAHIT || unicode == THAI_YAMAKKAN || unicode == THAI_MAIYAMOK) return THAI_CHAR_LVL1;
+  if(unicode >= THAI_MAI_EK && unicode <= THAI_THANTHAKHAT) return THAI_CHAR_LVL1_OR_2;
+
+  return THAI_CHAR_LVL0;
+}
+
+bool thai_font_get_glyph_dsc_fmt_txt(const lv_font_t * font, lv_font_glyph_dsc_t * dsc_out, uint32_t unicode_letter, uint32_t unicode_letter_next) {
+  bool res = lv_font_get_glyph_dsc_fmt_txt(font, dsc_out, unicode_letter, unicode_letter_next);
+  uint8_t ctype = get_thai_char_level(unicode_letter);
+  if (!res) return false;
+  if (ctype == THAI_CHAR_NONE) return true;
+
+  uint8_t next_ctype = get_thai_char_level(unicode_letter_next);
+
+  if (ctype == THAI_CHAR_LVL1_OR_2) {
+    dsc_out->adv_w = 0;
+    dsc_out->ofs_y += (next_ctype != THAI_CHAR_LVL1_OR_2) ? dsc_out->box_h : 0;
+
+
+  }
+
+  return true;
+}
+
+// ฟังก์ชันเปิดใช้งาน Hook ให้กับฟอนต์
+void apply_thai_font_hook(lv_font_t * font) {
+    if (font && font->get_glyph_dsc != thai_font_get_glyph_dsc_fmt_txt) {
+      //thai_font = font;
+      font->get_glyph_dsc = thai_font_get_glyph_dsc_fmt_txt;
+    }
+}
+
+lv_obj_t *keyboard;
+lv_obj_t *tile_view, *sale_page, *menu_page;
+lv_obj_t *product_cart_item_wrapper;
+lv_obj_t *payment_opt_frame, *qr_pay_opt_frame, *cash_pay_opt_frame, *payment_topic;
+lv_obj_t *loading_bar, *payment_close_label;
+
+static void drag_event_handler(lv_event_t * e) {
+    lv_obj_t * obj = lv_event_get_target(e);
+    lv_indev_t * indev = lv_indev_active();
+    if(indev == NULL) return;
+
+    lv_point_t vect;
+    lv_indev_get_vect(indev, &vect);
+
+    int32_t x = lv_obj_get_x_aligned(obj) + vect.x;
+    int32_t y = lv_obj_get_y_aligned(obj) + vect.y;
+
+    lv_obj_set_pos(obj, x, y);
+}
+
+static void close_btn_handler(lv_event_t * e) {
+  lv_obj_t *dia = (lv_obj_t*)lv_event_get_user_data(e);
+  lv_obj_delete_async(dia);
+  dia = NULL;
+}
+
+
+lv_obj_t *vd_dialog_create(lv_obj_t *parant, const char *topic);
+
+static void new_dia_event_handler(lv_event_t * e) {
+  vd_dialog_create(lv_screen_active(), "Test");
+}
+
+
+lv_obj_t *vd_dialog_create(lv_obj_t *parant, const char *topic){
+  lv_obj_t *dia = lv_obj_create(parant);
+  lv_obj_set_clickable(dia, true);
+  lv_obj_add_event_cb(dia, drag_event_handler, LV_EVENT_PRESSING, NULL);
+  lv_obj_set_style_pad_all(dia, 5, 0);
+  lv_obj_set_size(dia, 200, 100);
+
+  lv_obj_invalidate(dia);
+
+  //lv_obj_t *header = lv_obj_create(dia);
+  //lv_obj_set_size(header, lv_obj_get_width(dia), (int)(lv_obj_get_height(dia) / 10.0));
+
+  lv_obj_t *close_btn = lv_btn_create(dia);
+  lv_obj_set_align(close_btn, LV_ALIGN_TOP_RIGHT);
+  lv_obj_set_style_bg_color(close_btn, lv_color_make(255, 0, 0), 0);
+  lv_obj_add_event_cb(close_btn, close_btn_handler, LV_EVENT_RELEASED, dia);
+
+  lv_obj_t *close_btn_label = lv_label_create(close_btn);
+  lv_label_set_text(close_btn_label, "X");
+
+  return dia;
+}
+
+static void qr_pay_selected_cb(lv_event_t *e) {
+  vd_payment_opt_dialog_t *dialog = (vd_payment_opt_dialog_t*)lv_event_get_user_data(e);
+  vd_payment_opt_scroll_to_loading_page(dialog, e, QR);
+  LV_LOG_USER("QR Selected");
+
+  __start_qr = true; // ทดสอบ
+}
+
+static void cash_pay_selected_cb(lv_event_t *e) {
+  vd_payment_opt_dialog_t *dialog = (vd_payment_opt_dialog_t*)lv_event_get_user_data(e);
+  vd_payment_opt_scroll_to_loading_page(dialog, e, CASH);
+  LV_LOG_USER("CASH Selected");
+}
+
+void request_qr_cb(vd_payment_opt_dialog_t *dialog){
+  __start_qr = true; // ทดสอบ
+}
+
+void on_dialog_delete_cb(vd_payment_opt_dialog_t *p_dialog){
+  dialog = NULL;
+  LV_LOG_USER("dialog deleted!");
+}
+
+static void pay_ok_cb(lv_event_t *e){
+  vd_payment_opt_send_payment_ok_signal(dialog);
+}
+
+static void item_checkout_cb(lv_event_t *e) {
+  dialog = vd_payment_opt_dialog_create(lv_layer_top(), qr_pay_selected_cb, cash_pay_selected_cb, vd_cart_get_total_items(vd_home_page));
+
+  vd_payment_opt_card_set_badge(dialog->qr_pay_card->badge, "แนะนำ", true);
+  vd_payment_opt_card_set_badge(dialog->cash_pay_card->badge, "", false);
+
+  vd_payment_opt_set_total_amounts(dialog, vd_cart_get_total_amounts(vd_home_page));
+  vd_payment_opt_set_request_new_qr_cb(dialog, request_qr_cb);
+  vd_payment_opt_set_on_delete_cb(dialog, on_dialog_delete_cb);
+
+  lv_obj_t *pay_ok_btn = lv_button_create(dialog->main);
+  lv_obj_set_align(pay_ok_btn, LV_ALIGN_BOTTOM_RIGHT);
+  lv_obj_add_event_cb(pay_ok_btn, pay_ok_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *pay_ok_txt = lv_label_create(pay_ok_btn);
+  lv_label_set_text(pay_ok_txt, "Payok");
+  lv_obj_center(pay_ok_txt);
+}
+
+/* ── ฟังก์ชันเปิดไฟ Backlight ───────────────────────────────────── */
+static void bsp_enable_backlight(void) {
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << PIN_NUM_BK_LIGHT
+    };
+    gpio_config(&bk_gpio_config);
+    gpio_set_level(PIN_NUM_BK_LIGHT, 0);
+}
+
+static esp_lcd_touch_handle_t tp_handle = NULL;
+
+static void setup_touchscreen(lv_display_t *display) {
+    gpio_set_direction(TOUCH_PIN_RST, GPIO_MODE_OUTPUT);
+    gpio_set_level(TOUCH_PIN_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(TOUCH_PIN_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
+    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    tp_io_config.scl_speed_hz = 400000;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus_handle, &tp_io_config, &tp_io_handle));
+
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = LCD_H_RES,
+        .y_max = LCD_V_RES,
+        .rst_gpio_num = TOUCH_PIN_RST,
+        .int_gpio_num = TOUCH_PIN_INT,
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy = 0,
+            .mirror_x = 1,
+            .mirror_y = 1,
+        },
+    };
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, &tp_handle));
+
+    const lvgl_port_touch_cfg_t touch_cfg = {
+        .disp = display,
+        .handle = tp_handle,
+    };
+    lv_indev_t *touch_indev = lvgl_port_add_touch(&touch_cfg);
+    if (touch_indev == NULL) {
+        ESP_LOGE(TAG, "Failed to register touch indev to LVGL");
+    }
+
+    lv_indev_set_long_press_repeat_time(touch_indev, 10);
+}
+
+#define LCD_H_RES   1024
+#define LCD_V_RES   600
+
+void prod_card_clicked_cb(vd_prod_card_t *card, lv_event_t *e){
+  vd_cart_item_create(vd_home_page, card);
+  vd_toast_notify_create(NULL, "เพิ่มสินค้าลงตะกร้าแล้ว", 1500);
+}
+
+uint8_t *prod_img_buf[10];
+uint8_t *prod_raw_img_buf[10];
+uint8_t prod_img_cnt;
+
+lv_image_dsc_t prod_img_dsc[10];
+bool __read_all_prod_img_ok = false;
+
+void lvgl_main(void *pv_param) {
+  check_task_stack("LVGL_START", NULL);
+  if (lvgl_port_lock(0)) {
+    tile_view = lv_tileview_create(lv_screen_active());
+    sale_page = lv_tileview_add_tile(tile_view, 0, 0, LV_DIR_LEFT);
+    lv_obj_set_style_pad_left(sale_page, 0, 0);
+
+    /*apply_thai_font_hook((lv_font_t *)&anuphan_14);
+    apply_thai_font_hook((lv_font_t *)&anuphan_16);
+    apply_thai_font_hook((lv_font_t *)&anuphan_semi_bold_16);
+    apply_thai_font_hook((lv_font_t *)&anuphan_bold_16);
+    apply_thai_font_hook((lv_font_t *)&anuphan_18);
+    apply_thai_font_hook((lv_font_t *)&anuphan_med_18);
+    apply_thai_font_hook((lv_font_t *)&anuphan_semi_bold_18);
+    apply_thai_font_hook((lv_font_t *)&anuphan_20);
+    apply_thai_font_hook((lv_font_t *)&anuphan_bold_20);
+    apply_thai_font_hook((lv_font_t *)&anuphan_med_22);
+    apply_thai_font_hook((lv_font_t *)&anuphan_bold_18);
+    apply_thai_font_hook((lv_font_t *)&anuphan_22);
+    apply_thai_font_hook((lv_font_t *)&anuphan_bold_22);
+    apply_thai_font_hook((lv_font_t *)&anuphan_bold_24);
+    apply_thai_font_hook((lv_font_t *)&anuphan_bold_26);*/
+    anuphan_18.fallback = &font_awesome_20;
+
+    keyboard = lvgl_thai_kb_create(lv_screen_active(), &anuphan_18);
+
+    vd_home_page = vd_home_page_create(sale_page, LCD_H_RES, LCD_V_RES, item_checkout_cb);
+    lv_obj_set_state(vd_home_page->prod_search_ta, LV_STATE_FOCUSED, false);
+
+    vd_task_mgr_register_task(xTaskGetCurrentTaskHandle());
+    vd_task_manager_create(lv_layer_top());
+
+    lvgl_port_unlock();
+
+    log_system_memory();
+    check_task_stack("LVGL_END", NULL);
+  }
+
+  while (1) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    if(__read_all_prod_img_ok){
+      if (lvgl_port_lock(1000)) {
+      __read_all_prod_img_ok = false;
+      for (int i = 0; i < prod_img_cnt; i++) {
+        bool is_promotion = i % 2 == 0;
+        vd_prod_card_create(vd_home_page, "ข้าวผัดกะเพรา", 60.0, is_promotion ? 50.0 : 0, &prod_img_dsc[i], prod_card_clicked_cb);
+      }
+      lvgl_port_unlock();
+    }
+    }
+
+    if (__start_qr) {
+      __start_qr = false;
+      vTaskDelay(pdMS_TO_TICKS(4000)); // รอจำลองการสร้าง QR
+
+      // 1. ถือรหัสความปลอดภัยก่อนเข้ายุ่งกับ LVGL (รอจนกว่าจะได้สิทธิ์)
+      if (lvgl_port_lock(1000)) { // รอคิวได้สูงสุด 1 วินาที
+        size_t png_data_size = 0;
+
+        if(raw_qr_img) {
+          free(raw_qr_img);
+          raw_qr_img = NULL;
+        }
+
+        raw_qr_img = vd_base64_decode(qr_b64data, &png_data_size);
+
+        if (raw_qr_img && png_data_size > 0) {
+          qr_img_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+          qr_img_dsc.header.cf = LV_COLOR_FORMAT_RAW;
+          qr_img_dsc.header.w = 0;
+          qr_img_dsc.header.h = 0;
+          qr_img_dsc.data_size = png_data_size;
+          qr_img_dsc.data = raw_qr_img;
+
+          // ตรวจสอบความถูกต้องของ Pointer ก่อนเรียกใช้
+          if (dialog && dialog->qr_img) {
+            vd_payment_opt_set_qr_data(dialog, &qr_img_dsc, 12000);
+            vd_payment_opt_send_loading_ok_signal(dialog);
+          } else {
+            ESP_LOGE("PAYMENT", "Invalid dialog or qr_img pointer!");
+          }
+        } else {
+          ESP_LOGE("PAYMENT", "Base64 decode failed!");
+        }
+
+        lvgl_port_unlock(); // ปล่อยคืนสิทธิ์ทุกครั้ง
+      }
+    }
+  }
+}
+
+bool img_cb(const char *file_path, const char *file_name, size_t file_size, void *user_data) {
+  if (prod_img_cnt == 10) {
+    __read_all_prod_img_ok = false;
+    return false;
+  }
+
+  esp_err_t err = vd_sd_read_file(file_path, &prod_img_buf[prod_img_cnt], &file_size, true);
+  if (err != ESP_OK) return false;
+
+  vd_img_info_t img_info = {};
+  vd_img_type_t img_type = vd_img_check_type(prod_img_buf[prod_img_cnt], file_size, &img_info);
+
+  if(img_type == VD_IMG_TYPE_JPG) {
+    uint32_t out_w = 0, out_h = 0;
+    size_t out_size = 0;
+
+    // บรรทัดเดียวจบ: จองแรม Aligned + ถอดรหัสให้เสร็จสรรพ
+    err = vd_img_jpg_dec(prod_img_buf[prod_img_cnt], file_size, 
+                         &prod_raw_img_buf[prod_img_cnt], &out_size, &out_w, &out_h);
+
+    if (err == ESP_OK) {
+      // สร้าง LVGL Descriptor
+      img_info.width  = out_w;
+      img_info.height = out_h;
+      vd_img_jpg_to_lv_dsc(prod_raw_img_buf[prod_img_cnt], out_size, &img_info, &prod_img_dsc[prod_img_cnt]);
+    }
+  }
+
+  free(prod_img_buf[prod_img_cnt]);
+  prod_img_cnt++;
+
+  return true;
+}
+
+static lv_obj_t *avi_video = NULL;
+static lv_obj_t *s_ctrl_bar          = NULL;
+static lv_obj_t *s_slider            = NULL;
+static lv_obj_t *s_slider_time       = NULL;
+static lv_obj_t *s_play_pause_btn    = NULL;
+static lv_obj_t *s_play_pause_txt    = NULL;
+static lv_timer_t *s_video_sync_timer = NULL;
+
+static bool s_is_scrubbing = false; // ป้องกัน Slider เด้งกลับจังหวะที่ผู้ใช้นิ้วกดลากค้างไว้
+
+#include "driver/i2s_std.h"
+#include "freertos/ringbuf.h"
+#include "helix/pub/mp3dec.h"
+
+static i2s_chan_handle_t s_i2s_tx_chan = NULL;
+static RingbufHandle_t   s_audio_ringbuf = NULL;
+static TaskHandle_t      s_audio_task_hdl = NULL;
+static uint32_t          s_current_audio_rate = 0;
+static volatile bool s_audio_flush      = false;
+
+static uint32_t s_stat_audio_in_bytes = 0;
+static uint32_t s_stat_audio_in_chunks = 0;
+static uint32_t s_stat_audio_dropped_chunks = 0;
+
+/* ตรวจสอบว่าเป็นไฟล์ AVI หรือไม่ */
+static bool _is_avi_file(const char *filename) {
+    if (!filename) return false;
+    const char *dot = strrchr(filename, '.');
+    if (!dot) return false;
+    return (strcasecmp(dot, ".avi") == 0);
+}
+
+/* แปลงขนาดไบต์เป็นข้อความ KB หรือ MB */
+static void _format_size_str(size_t bytes, char *buf, size_t buf_sz) {
+    if (bytes >= 1024 * 1024) {
+        snprintf(buf, buf_sz, "%.1f MB", (float)bytes / (1024.0f * 1024.0f));
+    } else {
+        snprintf(buf, buf_sz, "%u KB", (unsigned)(bytes / 1024));
+    }
+}
+
+static lv_obj_t *s_playlist_panel = NULL;
+static lv_obj_t *s_playlist_list  = NULL;
+static char      s_current_playing_file[64] = "output.avi"; // บันทึกชื่อไฟล์ที่กำลังเล่นอยู่
+
+/* Event เมื่อแตะเลือกไฟล์ในรายการ */
+static void _playlist_item_click_cb(lv_event_t *e) {
+    lv_obj_t *item_btn = lv_event_get_target(e);
+    lv_obj_t *target_video = (lv_obj_t *)lv_event_get_user_data(e);
+    const char *fname = (const char *)lv_obj_get_user_data(item_btn);
+    if (!fname || !target_video) return;
+
+    // สร้าง Full Path
+    char full_path[128];
+    snprintf(full_path, sizeof(full_path), "0:/%s", fname);
+    ESP_LOGI(TAG, "Selected Video: %s", full_path);
+
+    // 1. สั่งหยุดและเปลี่ยนไฟล์เล่นทันที
+    vd_avi_set_src(target_video, full_path);
+    vd_avi_play(target_video);
+
+    // 2. จำชื่อไฟล์และอัปเดตสถานะ Highlight
+    strncpy(s_current_playing_file, fname, sizeof(s_current_playing_file) - 1);
+
+    // 3. ปิดแผง Playlist ลงอัตโนมัติ
+    lv_obj_add_flag(s_playlist_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ฟังก์ชันสแกน SD Card แล้วเติมรายการลงใน LVGL List */
+static void _populate_avi_playlist(lv_obj_t *list, lv_obj_t *target_video) {
+    lv_obj_clean(list); // ล้างรายการเดิม
+
+    DIR dir;
+    FILINFO fno;
+    FRESULT fr = f_opendir(&dir, "0:/");
+    if (fr != FR_OK) {
+        ESP_LOGE(TAG, "Cannot open SD root 0:/ (err=%d)", fr);
+        return;
+    }
+
+    uint32_t count = 0;
+    while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0) {
+        if (!(fno.fattrib & AM_DIR) && _is_avi_file(fno.fname)) {
+            count++;
+
+            // สร้างปุ่มรายการขนาดแตะง่าย (สูง 52px)
+            lv_obj_t *btn = lv_button_create(list);
+            lv_obj_set_size(btn, lv_pct(100), 52);
+            lv_obj_set_style_radius(btn, 8, 0);
+            lv_obj_set_style_pad_hor(btn, 12, 0);
+            lv_obj_set_style_pad_ver(btn, 6, 0);
+
+            // ไฮไลต์ไฟล์ที่กำลังเล่นอยู่
+            bool is_cur = (strcmp(s_current_playing_file, fno.fname) == 0);
+            lv_obj_set_style_bg_color(btn, is_cur ? lv_color_hex(0x5B6EF5) : lv_color_hex(0x1E293B), 0);
+            lv_obj_set_style_border_color(btn, lv_color_hex(0x334155), 0);
+            lv_obj_set_style_border_width(btn, 1, 0);
+            lv_obj_set_style_shadow_width(btn, 0, 0);
+
+            // เก็บชื่อไฟล์ไว้ใน user_data
+            char *name_copy = strdup(fno.fname);
+            lv_obj_set_user_data(btn, name_copy);
+            lv_obj_add_event_cb(btn, _playlist_item_click_cb, LV_EVENT_CLICKED, target_video);
+
+            // เลย์เอาต์ภายในปุ่ม (ไอคอน + ชื่อไฟล์ + ขนาด)
+            lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+            lv_obj_t *icon = lv_label_create(btn);
+            lv_label_set_text(icon, LV_SYMBOL_VIDEO);
+            lv_obj_set_style_text_color(icon, is_cur ? lv_color_white() : lv_color_hex(0x94A3B8), 0);
+
+            lv_obj_t *label_name = lv_label_create(btn);
+            lv_label_set_text(label_name, fno.fname);
+            lv_label_set_long_mode(label_name, LV_LABEL_LONG_DOT);
+            lv_obj_set_flex_grow(label_name, 1);
+            lv_obj_set_style_text_color(label_name, lv_color_white(), 0);
+            lv_obj_set_style_text_font(label_name, &anuphan_14, 0);
+
+            char size_str[16];
+            _format_size_str((size_t)fno.fsize, size_str, sizeof(size_str));
+            lv_obj_t *label_sz = lv_label_create(btn);
+            lv_label_set_text(label_sz, size_str);
+            lv_obj_set_style_text_color(label_sz, is_cur ? lv_color_hex(0xE2E8F0) : lv_color_hex(0x64748B), 0);
+            lv_obj_set_style_text_font(label_sz, &anuphan_14, 0);
+        }
+    }
+    f_closedir(&dir);
+
+    if (count == 0) {
+        lv_obj_t *empty_label = lv_label_create(list);
+        lv_label_set_text(empty_label, "ไม่พบไฟล์ .avi ใน SD Card");
+        lv_obj_set_style_text_color(empty_label, lv_color_hex(0x64748B), 0);
+        lv_obj_set_style_text_font(empty_label, &anuphan_14, 0);
+        lv_obj_center(empty_label);
+    }
+}
+
+/* Event ปิดแถบ Playlist */
+static void _playlist_close_btn_cb(lv_event_t *e) {
+    lv_obj_add_flag(s_playlist_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ฟังก์ชันสร้าง Drawer แสดง Playlist วิดีโอ */
+static void create_playlist_panel(lv_obj_t *parent, lv_obj_t *target_video) {
+    // 1. กล่องพื้นหลังแบบลอยตัว อยู่ชิดขวา
+    s_playlist_panel = lv_obj_create(parent);
+    lv_obj_set_size(s_playlist_panel, 330, 480);
+    lv_obj_align(s_playlist_panel, LV_ALIGN_TOP_RIGHT, -16, 20);
+    lv_obj_set_style_bg_color(s_playlist_panel, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_bg_opa(s_playlist_panel, LV_OPA_90, 0);
+    lv_obj_set_style_border_color(s_playlist_panel, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_border_width(s_playlist_panel, 1, 0);
+    lv_obj_set_style_radius(s_playlist_panel, 16, 0);
+    lv_obj_set_style_pad_all(s_playlist_panel, 12, 0);
+    lv_obj_set_scrollable(s_playlist_panel, false);
+    lv_obj_add_flag(s_playlist_panel, LV_OBJ_FLAG_HIDDEN); // ซ่อนไว้เริ่มต้น
+
+    // 2. Header ของ Playlist (ชื่อหัวข้อ + ปุ่มปิด X)
+    lv_obj_t *header = lv_obj_create(s_playlist_panel);
+    lv_obj_set_size(header, lv_pct(100), 40);
+    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_scrollable(header, false);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "รายการวิดีโอ (SD Card)");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &anuphan_semi_bold_16, 0);
+
+    lv_obj_t *close_btn = lv_button_create(header);
+    lv_obj_set_size(close_btn, 32, 32);
+    lv_obj_set_style_radius(close_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_shadow_width(close_btn, 0, 0);
+    lv_obj_add_event_cb(close_btn, _playlist_close_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *close_txt = lv_label_create(close_btn);
+    lv_label_set_text(close_txt, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(close_txt, lv_color_white(), 0);
+    lv_obj_center(close_txt);
+
+    // 3. คอนเทนเนอร์รายการแบบเลื่อนได้ (Scrollable List Container)
+    s_playlist_list = lv_obj_create(s_playlist_panel);
+    lv_obj_set_size(s_playlist_list, lv_pct(100), 410);
+    lv_obj_align(s_playlist_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_playlist_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_playlist_list, 0, 0);
+    lv_obj_set_style_pad_all(s_playlist_list, 0, 0);
+    lv_obj_set_flex_flow(s_playlist_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_playlist_list, 6, 0); // ระยะห่างแต่ละแถว
+}
+
+/* Callback สลับเปิด/ปิดแผง Playlist */
+static void _playlist_toggle_btn_cb(lv_event_t *e) {
+    lv_obj_t *target_video = (lv_obj_t *)lv_event_get_user_data(e);
+    if (!s_playlist_panel) return;
+
+    if (lv_obj_has_flag(s_playlist_panel, LV_OBJ_FLAG_HIDDEN)) {
+        // อัปเดตรายการไฟล์ล่าสุดจาก SD Card ก่อนแสดงผล
+        _populate_avi_playlist(s_playlist_list, target_video);
+        lv_obj_remove_flag(s_playlist_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_playlist_panel);
+    } else {
+        lv_obj_add_flag(s_playlist_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* 1.1 ตั้งค่าฮาร์ดแวร์ I2S สำหรับส่งสัญญาณเสียงเข้า ES8311 */
+static void init_audio_hardware(void) {
+    // 3. ติดตั้งไดรเวอร์ I2S TX Channel
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true; // ส่งค่าความเงียบอัตโนมัติเมื่อ Buffer ว่าง ป้องกันเสียงจี่/ค้าง
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &s_i2s_tx_chan, NULL));
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = {
+            .sample_rate_hz = 44100, // ค่าเริ่มต้น
+            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .ext_clk_freq_hz = 0,
+            .mclk_multiple = I2S_MCLK_MULTIPLE_256, // ES8311 ต้องการ MCLK = 256 * Fs
+        },
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_MCLK_IO, // GPIO 13
+            .bclk = I2S_BCLK_IO, // GPIO 12
+            .ws   = I2S_WS_IO,   // GPIO 10
+            .dout = I2S_DOUT_IO, // GPIO 9
+            .din  = GPIO_NUM_NC,
+            .invert_flags = {0},
+        },
+    };
+
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_i2s_tx_chan, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(s_i2s_tx_chan));
+    s_current_audio_rate = 44100;
+
+    // 2. ตั้งค่าชิป DAC ES8311 ผ่านบัส I2C
+    es8311_codec_init(i2c_bus_handle);
+
+gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << PA_ENABLE_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(PA_ENABLE_GPIO, 1); // สั่ง High เพื่อเปิดวงจรขยายเสียง
+}
+
+/* 1.2 สลับ Sample Rate ของบัส I2S อัตโนมัติตามข้อมูลจริงในไฟล์ AVI */
+static void reconfig_i2s_rate_if_needed(uint32_t rate) {
+    if (rate > 0 && rate != s_current_audio_rate && s_i2s_tx_chan) {
+        i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+        clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+        i2s_channel_disable(s_i2s_tx_chan);
+        i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
+        i2s_channel_enable(s_i2s_tx_chan);
+        s_current_audio_rate = rate;
+        ESP_LOGI("AUDIO", "Switched I2S Sample Rate to: %lu Hz", rate);
+    }
+}
+HMP3Decoder mp3_dec;
+#define AUDIO_ACCUM_BUF_SIZE (16 * 1024) // ขยายเป็น 16 KB กันตกหล่น
+
+static void audio_player_task(void *pvParam) {
+    HMP3Decoder mp3_dec = MP3InitDecoder();
+    if (!mp3_dec) {
+        ESP_LOGE("AUDIO", "MP3InitDecoder failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int16_t *pcm_out = (int16_t *)malloc(1152 * 2 * sizeof(int16_t));
+    uint8_t *accum_buf = (uint8_t *)malloc(AUDIO_ACCUM_BUF_SIZE);
+    int accum_bytes = 0;
+    MP3FrameInfo frame_info;
+
+    uint32_t current_sample_rate = 0;
+    
+    // ตัวแปรเก็บสถิติสำหรับ Debug
+    uint32_t frames_decoded = 0;
+    uint32_t underflow_cnt = 0;
+    uint32_t err_header_cnt = 0;
+    uint32_t accum_overflow_cnt = 0;
+    int64_t last_log_time = esp_timer_get_time();
+
+    while (1) {
+        // --- 1. สรุปผล Diagnostic ทุก 1 วินาที ---
+        /*
+        int64_t now = esp_timer_get_time();
+        if (now - last_log_time >= 1000000) {
+            size_t rb_free = xRingbufferGetCurFreeSize(s_audio_ringbuf);
+            ESP_LOGI("AUDIO_DIAG", 
+                     "In: %lu chk (%lu B) | Drop: %lu | Decoded: %lu fps | Underflow: %lu | BadHdr: %lu | AccumOvf: %lu | RB Free: %u B",
+                     s_stat_audio_in_chunks, s_stat_audio_in_bytes, s_stat_audio_dropped_chunks,
+                     frames_decoded, underflow_cnt, err_header_cnt, accum_overflow_cnt, (unsigned)rb_free);
+
+            // รีเซ็ตตัวนับรอบวินาที
+            s_stat_audio_in_chunks = 0;
+            s_stat_audio_in_bytes = 0;
+            frames_decoded = 0;
+            underflow_cnt = 0;
+            err_header_cnt = 0;
+            accum_overflow_cnt = 0;
+            last_log_time = now;
+        }*/
+
+        if (s_audio_flush) {
+            accum_bytes = 0;
+            s_audio_flush = false;
+        }
+
+        size_t item_size = 0;
+        // รอรับ Chunk จาก RingBuffer สูงสุด 20ms
+        uint8_t *chunk = (uint8_t *)xRingbufferReceive(s_audio_ringbuf, &item_size, pdMS_TO_TICKS(20));
+        
+        if (chunk) {
+            if (accum_bytes + item_size <= AUDIO_ACCUM_BUF_SIZE) {
+                memcpy(accum_buf + accum_bytes, chunk, item_size);
+                accum_bytes += item_size;
+            } else {
+                accum_overflow_cnt++;
+                accum_bytes = 0; // เผื่อกรณีค้างหนัก
+            }
+            vRingbufferReturnItem(s_audio_ringbuf, (void *)chunk);
+        }
+
+        if (accum_bytes == 0) {
+            continue;
+        }
+
+        int bytes_left = accum_bytes;
+        unsigned char *read_ptr = accum_buf;
+
+        // --- 2. ลูปถอดรหัส ---
+        while (bytes_left > 0) {
+            int offset = MP3FindSyncWord(read_ptr, bytes_left);
+            if (offset < 0) {
+                bytes_left = 0;
+                break;
+            }
+
+            read_ptr += offset;
+            bytes_left -= offset;
+
+            int err = MP3Decode(mp3_dec, &read_ptr, &bytes_left, pcm_out, 0);
+            
+            if (err == ERR_MP3_NONE) {
+                frames_decoded++;
+                MP3GetLastFrameInfo(mp3_dec, &frame_info);
+
+                if (frame_info.samprate > 0 && frame_info.samprate != current_sample_rate) {
+                    current_sample_rate = frame_info.samprate;
+                    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(current_sample_rate);
+                    clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+                    i2s_channel_disable(s_i2s_tx_chan);
+                    i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
+                    i2s_channel_enable(s_i2s_tx_chan);
+                }
+
+                size_t pcm_bytes = 0;
+                if (frame_info.nChans == 1) {
+                    short stereo_temp[1152 * 2];
+                    for (int i = 0; i < frame_info.outputSamps; i++) {
+                        stereo_temp[i * 2]     = pcm_out[i];
+                        stereo_temp[i * 2 + 1] = pcm_out[i];
+                    }
+                    pcm_bytes = frame_info.outputSamps * 2 * sizeof(int16_t);
+                    size_t written = 0;
+                    i2s_channel_write(s_i2s_tx_chan, stereo_temp, pcm_bytes, &written, portMAX_DELAY);
+                } else {
+                    pcm_bytes = frame_info.outputSamps * sizeof(int16_t);
+                    size_t written = 0;
+                    i2s_channel_write(s_i2s_tx_chan, pcm_out, pcm_bytes, &written, portMAX_DELAY);
+                }
+            } 
+            else if (err == ERR_MP3_INDATA_UNDERFLOW) {
+                underflow_cnt++;
+                break; // รอข้อมูล Chunk ถัดไปมาประกอบ
+            } 
+            else {
+                err_header_cnt++;
+                if (bytes_left > 0) {
+                    read_ptr++;
+                    bytes_left--;
+                }
+            }
+        }
+
+        // เก็บเศษไบต์ที่ถอดไม่หมดไว้ที่ต้นบัฟเฟอร์
+        if (bytes_left > 0 && read_ptr != accum_buf) {
+            memmove(accum_buf, read_ptr, bytes_left);
+        }
+        accum_bytes = bytes_left;
+    }
+
+    MP3FreeDecoder(mp3_dec);
+    free(accum_buf);
+    free(pcm_out);
+    vTaskDelete(NULL);
+}
+
+static void on_avi_audio_chunk(const uint8_t *data, size_t len, void *user_ctx) {
+    // ส่งเข้า RingBuffer ตามปกติ
+    if (s_audio_ringbuf && data && len > 0) {
+        xRingbufferSend(s_audio_ringbuf, data, len, 0);
+    }
+}
+
+/* แปลงวินาทีเป็นข้อความ MM:SS หรือ HH:MM:SS */
+static void _format_time_sec(uint32_t sec, char *buf, size_t buf_sz) {
+    unsigned int h = (unsigned int)(sec / 3600);
+    unsigned int m = (unsigned int)((sec % 3600) / 60);
+    unsigned int s = (unsigned int)(sec % 60);
+
+    if (h > 0) {
+        snprintf(buf, buf_sz, "%02u:%02u:%02u", h, m, s);
+    } else {
+        snprintf(buf, buf_sz, "%02u:%02u", m, s);
+    }
+}
+
+/* Event เมื่อกดหรือลาก Slider */
+static void _video_slider_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *slider_obj = lv_event_get_target(e);
+    lv_obj_t *target_video = (lv_obj_t *)lv_event_get_user_data(e);
+
+    if (code == LV_EVENT_PRESSED) {
+        s_is_scrubbing = true; // เริ่มลาก: หยุดการ Sync ตำแหน่งชั่วคราว
+    } 
+    else if (code == LV_EVENT_VALUE_CHANGED) {
+        // อัปเดตตัวเลขเวลาตามนิ้วที่ลากทันที
+        uint32_t seek_val = (uint32_t)lv_slider_get_value(slider_obj);
+        uint32_t tot_sec  = vd_avi_get_total_sec(target_video);
+
+        char cur_str[16], tot_str[16];
+        _format_time_sec(seek_val, cur_str, sizeof(cur_str));
+        _format_time_sec(tot_sec, tot_str, sizeof(tot_str));
+        lv_label_set_text_fmt(s_slider_time, "%s / %s", cur_str, tot_str);
+    } 
+    else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        // ปล่อยมือ: สั่ง Seek วิดีโอไปยังวินาทีที่ปล่อย
+        uint32_t target_sec = (uint32_t)lv_slider_get_value(slider_obj);
+        vd_avi_seek(target_video, target_sec);
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        if (s_audio_ringbuf) {
+    size_t dummy_sz = 0;
+    while (xRingbufferReceive(s_audio_ringbuf, &dummy_sz, 0)) {
+        // ดึงทิ้งจนเกลี้ยงบัฟเฟอร์
+    }
+  }
+  s_audio_flush      = true;
+
+        s_is_scrubbing = false;
+        uint32_t sec = vd_avi_get_current_sec(target_video);
+        ESP_LOGI(TAG, "Set seek to %lus", sec);
+    }
+}
+
+/* Event เมื่อกดปุ่ม Play / Pause */
+static void _play_pause_btn_cb(lv_event_t *e) {
+    lv_obj_t *target_video = (lv_obj_t *)lv_event_get_user_data(e);
+    if (!target_video) return;
+
+    if (vd_avi_is_playing(target_video)) {
+        vd_avi_pause(target_video);
+        lv_label_set_text(s_play_pause_txt, LV_SYMBOL_PLAY);
+    } else {
+        vd_avi_play(target_video);
+        lv_label_set_text(s_play_pause_txt, LV_SYMBOL_PAUSE);
+    }
+}
+
+/* Timer สำหรับอัปเดตตำแหน่ง Slider และเวลาแบบ Real-time ทุกๆ 250 ms */
+static void _video_sync_timer_cb(lv_timer_t *t) {
+    lv_obj_t *target_video = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (!target_video || !lv_obj_is_valid(target_video)) return;
+
+    uint32_t tot_sec = vd_avi_get_total_sec(target_video);
+    uint32_t cur_sec = vd_avi_get_current_sec(target_video);
+
+    // อัปเดตไอคอนปุ่มให้ตรงตามสถานะการเล่นจริง
+    bool is_play = vd_avi_is_playing(target_video);
+    lv_label_set_text(s_play_pause_txt, is_play ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+
+    // หากกำลังใช้นิ้วลาก Slider อยู่ ไม่ให้อัปเดตตำแหน่งทับ
+    if (!s_is_scrubbing && s_slider) {
+        lv_slider_set_range(s_slider, 0, (int32_t)tot_sec);
+        lv_slider_set_value(s_slider, (int32_t)cur_sec, LV_ANIM_OFF);
+
+        char cur_str[16], tot_str[16];
+        _format_time_sec(cur_sec, cur_str, sizeof(cur_str));
+        _format_time_sec(tot_sec, tot_str, sizeof(tot_str));
+        lv_label_set_text_fmt(s_slider_time, "%s / %s", cur_str, tot_str);
+    }
+}
+
+static lv_obj_t *s_vol_slider     = NULL;
+static lv_obj_t *s_vol_btn        = NULL;
+static lv_obj_t *s_vol_txt        = NULL;
+static bool      s_is_muted       = false;
+static uint8_t   s_last_volume    = 80; // ระดับเสียงเริ่มต้น 80%
+
+/* Callback เมื่อเลื่อน Slider ปรับความดังเสียง */
+static void _volume_slider_event_cb(lv_event_t *e) {
+    lv_obj_t *slider_obj = lv_event_get_target(e);
+    int32_t val = lv_slider_get_value(slider_obj);
+
+    if (val <= 0) {
+        val = 0;
+        s_is_muted = true;
+        es8311_set_mute(true);
+        lv_label_set_text(s_vol_txt, LV_SYMBOL_MUTE);
+    } else {
+        if (s_is_muted) {
+            es8311_set_mute(false);
+            s_is_muted = false;
+        }
+        s_last_volume = (uint8_t)val;
+        es8311_set_volume(s_last_volume);
+        lv_label_set_text(s_vol_txt, (val > 50) ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_VOLUME_MID);
+    }
+}
+
+/* Callback เมื่อแตะไอคอนลำโพงเพื่อสลับ Mute / Unmute */
+static void _vol_mute_btn_cb(lv_event_t *e) {
+    s_is_muted = !s_is_muted;
+
+    if (s_is_muted) {
+        es8311_set_mute(true);
+        lv_slider_set_value(s_vol_slider, 0, LV_ANIM_ON);
+        lv_label_set_text(s_vol_txt, LV_SYMBOL_MUTE);
+    } else {
+        es8311_set_mute(false);
+        if (s_last_volume == 0) s_last_volume = 50;
+        es8311_set_volume(s_last_volume);
+        lv_slider_set_value(s_vol_slider, (int32_t)s_last_volume, LV_ANIM_ON);
+        lv_label_set_text(s_vol_txt, (s_last_volume > 50) ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_VOLUME_MID);
+    }
+}
+
+/* ฟังก์ชันสร้าง Control Bar */
+static void create_video_controls(lv_obj_t *parent, lv_obj_t *target_video) {
+    if (!parent || !target_video) return;
+
+    // 1. แถบพื้นหลังลอย (Floating Bar) ด้านล่างจอ กว้าง 860 px
+    s_ctrl_bar = lv_obj_create(parent);
+    lv_obj_set_size(s_ctrl_bar, 860, 56);
+    lv_obj_align(s_ctrl_bar, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_bg_color(s_ctrl_bar, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_bg_opa(s_ctrl_bar, LV_OPA_80, 0); // โปร่งแสง 80%
+    lv_obj_set_style_border_color(s_ctrl_bar, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_border_width(s_ctrl_bar, 1, 0);
+    lv_obj_set_style_radius(s_ctrl_bar, 28, 0); // ทรงแคปซูลมน
+    lv_obj_set_style_pad_hor(s_ctrl_bar, 16, 0);
+    lv_obj_set_style_pad_ver(s_ctrl_bar, 0, 0);
+    lv_obj_set_scrollable(s_ctrl_bar, false);
+    lv_obj_set_flex_flow(s_ctrl_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_ctrl_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    // 2. ปุ่ม Play / Pause
+    s_play_pause_btn = lv_button_create(s_ctrl_bar);
+    lv_obj_set_size(s_play_pause_btn, 40, 40);
+    lv_obj_set_style_radius(s_play_pause_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_play_pause_btn, lv_color_hex(0x5B6EF5), 0);
+    lv_obj_set_style_shadow_width(s_play_pause_btn, 0, 0);
+    lv_obj_set_style_shadow_width(s_play_pause_btn, 0, 0);
+    lv_obj_set_ext_click_area(s_play_pause_btn, 20);
+    lv_obj_add_event_cb(s_play_pause_btn, _play_pause_btn_cb, LV_EVENT_CLICKED, target_video);
+
+    s_play_pause_txt = lv_label_create(s_play_pause_btn);
+    lv_label_set_text(s_play_pause_txt, LV_SYMBOL_PAUSE);
+    lv_obj_set_style_text_color(s_play_pause_txt, lv_color_white(), 0);
+    lv_obj_center(s_play_pause_txt);
+
+    // 3. ตัวลากความคืบหน้า (Scrubber Slider)
+    s_slider = lv_slider_create(s_ctrl_bar);
+    lv_obj_set_flex_grow(s_slider, 1); // ยืดความกว้างให้เต็มพื้นที่ส่วนกลาง
+    lv_obj_set_height(s_slider, 10);
+    lv_slider_set_range(s_slider, 0, 100);
+    lv_obj_set_style_bg_color(s_slider, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_slider, lv_color_hex(0x5B6EF5), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s_slider, 5, LV_PART_KNOB); // ขนาดหัวลาก
+    lv_obj_set_ext_click_area(s_slider, 10);
+    lv_obj_add_event_cb(s_slider, _video_slider_event_cb, LV_EVENT_ALL, target_video);
+
+    // 4. ข้อความแสดงเวลา (MM:SS / MM:SS)
+    s_slider_time = lv_label_create(s_ctrl_bar);
+    lv_label_set_text(s_slider_time, "00:00 / 00:00");
+    lv_obj_set_style_text_color(s_slider_time, lv_color_hex(0xCBD5E1), 0);
+    lv_obj_set_style_text_font(s_slider_time, &anuphan_14, 0);
+    lv_obj_set_style_pad_left(s_slider_time, 12, 0);
+
+    // 5. ผูก Timer วนอ่านค่าเวลาเพื่ออัปเดตแถบ UI
+    s_video_sync_timer = lv_timer_create(_video_sync_timer_cb, 250, target_video);
+
+    // 5. ปุ่มไอคอน Mute / Unmute
+    s_vol_btn = lv_button_create(s_ctrl_bar);
+    lv_obj_set_size(s_vol_btn, 36, 36);
+    lv_obj_set_style_radius(s_vol_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(s_vol_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(s_vol_btn, 0, 0);
+    lv_obj_set_ext_click_area(s_vol_btn, 10);
+    lv_obj_add_event_cb(s_vol_btn, _vol_mute_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    s_vol_txt = lv_label_create(s_vol_btn);
+    lv_label_set_text(s_vol_txt, LV_SYMBOL_VOLUME_MAX);
+    lv_obj_set_style_text_color(s_vol_txt, lv_color_hex(0x94A3B8), 0);
+    lv_obj_center(s_vol_txt);
+
+    // 6. แถบลากปรับความดังเสียง (Volume Slider) กว้าง 90 px
+    s_vol_slider = lv_slider_create(s_ctrl_bar);
+    lv_obj_set_size(s_vol_slider, 90, 6);
+    lv_slider_set_range(s_vol_slider, 0, 110);
+    lv_slider_set_value(s_vol_slider, (int32_t)s_last_volume, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_vol_slider, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_vol_slider, lv_color_hex(0x10B981), LV_PART_INDICATOR); // สีเขียวมิ้นต์แยกจากแถบวิดีโอ
+    lv_obj_set_style_bg_color(s_vol_slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s_vol_slider, 3, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(s_vol_slider, 12);
+    lv_obj_add_event_cb(s_vol_slider, _volume_slider_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // ตั้งระดับเสียงเริ่มต้น 80% ให้ฮาร์ดแวร์
+    es8311_set_volume(s_last_volume);
+
+    // 7. ผูก Timer ซิงก์เวลาวิดีโอ 250ms
+    s_video_sync_timer = lv_timer_create(_video_sync_timer_cb, 250, target_video);
+
+    // 7. ปุ่มเปิดรายการวิดีโอ (Playlist Button)
+    lv_obj_t *s_playlist_btn = lv_button_create(s_ctrl_bar);
+    lv_obj_set_size(s_playlist_btn, 40, 40);
+    lv_obj_set_style_radius(s_playlist_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_playlist_btn, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_shadow_width(s_playlist_btn, 0, 0);
+    lv_obj_set_ext_click_area(s_playlist_btn, 12);
+    lv_obj_add_event_cb(s_playlist_btn, _playlist_toggle_btn_cb, LV_EVENT_CLICKED, target_video);
+
+    lv_obj_t *playlist_txt = lv_label_create(s_playlist_btn);
+    lv_label_set_text(playlist_txt, LV_SYMBOL_LIST);
+    lv_obj_set_style_text_color(playlist_txt, lv_color_white(), 0);
+    lv_obj_center(playlist_txt);
+
+    // สร้างแผง Playlist ซ้อนไว้บนหน้าจอ
+    create_playlist_panel(parent, target_video);
+}
+
+#define VD_MSP_SANDBOX_DIRECT_SERVER_URL      "https://stage.moneysp.net/"
+#define VD_MSP_SANDBOX_REDIRECT_SERVER_URL    "https://stage-a.moneysp.net/"
+#define VD_MSP_PRODUCTION_DIRECT_SERVER_URL   "https://moneyspace.net/"
+#define VD_MSP_PRODUCTION_REDIRECT_SERVER_URL "https://a.moneyspace.net/"
+
+#define VD_MSP_ORDER_STATUS_PENDING_STR "Pending"
+#define VD_MSP_ORDER_STATUS_SUCCESS_STR "Pay Success"
+#define VD_MSP_ORDER_STATUS_FAIL_STR    "Fail"
+#define VD_MSP_ORDER_STATUS_CANCEL_STR  "Cancel"
+#define VD_MSP_ORDER_STATUS_EXPIRED_STR "Expired"
+#define VD_MSP_ORDER_STATUS_ERROR_STR   "error"
+
+typedef enum vd_msp_order_status_t {
+  VD_MSP_ORDER_STATUS_PENDING,
+  VD_MSP_ORDER_STATUS_SUCCESS,
+  VD_MSP_ORDER_STATUS_FAIL,
+  VD_MSP_ORDER_STATUS_CANCEL,
+  VD_MSP_ORDER_STATUS_EXPIRED,
+  VD_MSP_ORDER_STATUS_ERROR
+} vd_msp_order_status_t;
+
+/*
+Create:
+[
+  {
+    "status": "success",
+    "transaction_ID": "txn_123456789",
+    "image_qrprom": "https://example.com/qr.png"
+  }
+]
+
+[
+  {
+    "status": "Have duplicate order number."
+  }
+]
+
+Get status:
+[
+  {
+    "order id": {
+      "status": "success",
+      "amount": 100.11,
+      "description": "Order has been completed"
+    }
+  }
+]
+
+[
+  {
+    "status": "error",
+    "description": "NotFound"
+  }
+]
+*/
+
+typedef enum vd_msp_err_t {
+  VD_MSP_OK,
+  VD_MSP_ERR_INVALID_PARAM,
+  VD_MSP_ERR_NO_MEM,
+  VD_MSP_ERR_HTTP,
+  VD_MSP_ERR_JSON,
+  VD_MSP_ERR_API,
+  VD_MSP_ERR_NODATA,
+} vd_msp_err_t;
+
+typedef struct vd_msp_promptpay_gateway_t {
+  http_req_t *http;
+
+  const char *secret_id; // required
+  const char *secret_key; // required
+  
+  char order_id[20]; // required, Must be unique, alphanumeric only, max 20 chars
+  char *firstname; // Shopper's first name
+  char *lastname; // Shopper's last name
+  char *email;  // Shopper's email for receipt
+  char *phone; // Shopper's mobile phone number
+  double amount; // required, Must be 2 decimal places and use dot (.) as decimal separator
+  char *description; // Product/service details
+  char *address;
+  char *message; // Note to the seller
+
+  // doc บอกว่า required แต่จริงๆ ไม่ใส่ก็ไม่ error
+  char *success_url; // required
+  char *fail_url; // required
+  char *cancel_url; // required
+
+  char agreement[200]; // One of [1,2,3,4,5] or any agreement text (max 200 characters)
+  char branch[128]; // Shopper's branch name
+  char device_id[32]; // Shopper's device ID
+  
+  char *ref1; // Shopper's ref 1
+  char *ref2; // Shopper's ref 2
+  char *ref3; // Shopper's ref 3
+  char *ref4; // Shopper's ref 4
+  char *ref5; // Shopper's ref 5
+
+  //char *language; // Default is th, accepts en or th
+
+  char *transaction_id;
+  char *qr_url;
+
+  bool transaction_created;
+} vd_msp_promptpay_gateway_t;
+
+/**
+ * @brief ดึงค่า double จาก cJSON (รองรับทั้งกรณีส่งมาเป็นตัวเลข 1.50 หรือข้อความ "1.50")
+ * @param item cJSON element ของคีย์นั้นๆ
+ * @param default_val ค่าดีฟอลต์กรณีหาไม่เจอหรือแปลงไม่ผ่าน
+ * @return ค่า double ที่แปลงได้
+ */
+double cjson_get_double(const cJSON *item, double default_val) {
+    if (!item) return default_val;
+
+    // กรณีที่ 1: ส่งมาเป็นตัวเลขแท้ 1.50
+    if (cJSON_IsNumber(item)) {
+        return item->valuedouble;
+    }
+
+    // กรณีที่ 2: ส่งมาเป็นสตริง "1.50"
+    if (cJSON_IsString(item) && item->valuestring) {
+        char *endptr = NULL;
+        double val = strtod(item->valuestring, &endptr);
+
+        // endptr != item->valuestring แสดงว่ามีการแปลงตัวเลขสำเร็จอย่างน้อย 1 ตัว
+        if (endptr != item->valuestring) {
+            return val;
+        }
+    }
+
+    return default_val;
+}
+
+vd_msp_promptpay_gateway_t *vd_msp_promptpay_gateway_init(const char *secret_id, const char *secret_key, const char *agreement) {
+    if (!secret_id || !secret_key || !agreement) return NULL;
+
+    vd_msp_promptpay_gateway_t *gw = (vd_msp_promptpay_gateway_t *)calloc(1, sizeof(vd_msp_promptpay_gateway_t));
+    if (!gw) {
+        ESP_LOGE(TAG, "Can't allocate memory for vd_msp_promptpay_gateway_t");
+        return NULL;
+    }
+
+    gw->secret_id  = secret_id;
+    gw->secret_key = secret_key;
+    
+    // คัดลอกอย่างปลอดภัยไม่เกินขนาดของ gw->agreement
+    strncpy(gw->agreement, agreement, sizeof(gw->agreement) - 1);
+    gw->agreement[sizeof(gw->agreement) - 1] = '\0';
+
+    gw->http = NULL;
+    return gw;
+}
+
+vd_msp_err_t vd_msp_promptpay_gateway_set_amount(vd_msp_promptpay_gateway_t *gw, double value){
+  if(!gw || value < 0.10 || value > 10000.0 || gw->transaction_created) return VD_MSP_ERR_INVALID_PARAM;
+
+  gw->amount = value;
+
+  return VD_MSP_OK;
+}
+
+vd_msp_err_t vd_msp_promptpay_gateway_set_order_id(vd_msp_promptpay_gateway_t *gw, const char *order_id) {
+    if (!gw || !order_id || gw->transaction_created) return VD_MSP_ERR_INVALID_PARAM;
+
+    strncpy(gw->order_id, order_id, sizeof(gw->order_id) - 1);
+    gw->order_id[sizeof(gw->order_id) - 1] = '\0';
+
+    return VD_MSP_OK;
+}
+
+vd_msp_err_t vd_msp_promptpay_gateway_set_device_id(vd_msp_promptpay_gateway_t *gw, const char *device_id) {
+    if (!gw || !device_id || gw->transaction_created) return VD_MSP_ERR_INVALID_PARAM;
+
+    strncpy(gw->device_id, device_id, sizeof(gw->device_id) - 1);
+    gw->device_id[sizeof(gw->device_id) - 1] = '\0';
+
+    return VD_MSP_OK;
+}
+
+vd_msp_err_t vd_msp_promptpay_gateway_create_transaction(vd_msp_promptpay_gateway_t *gw){
+  if(!gw || !strlen(gw->order_id) || gw->transaction_created) return VD_MSP_ERR_INVALID_PARAM;
+
+  gw->http = http_open(VD_MSP_PRODUCTION_REDIRECT_SERVER_URL "payment/CreateTransaction", HTTP_METHOD_POST);
+  if(!gw->http){
+    ESP_LOGI(TAG, "Can't allocate memory for http");
+    return VD_MSP_ERR_NO_MEM;
+  }
+
+  vd_msp_err_t gw_err = VD_MSP_OK;
+  char amount_str[20];
+  sprintf(amount_str, "%.2f", gw->amount);
+
+  gw->qr_url = NULL;
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "secret_id", gw->secret_id);
+  cJSON_AddStringToObject(root, "secret_key", gw->secret_key);
+  cJSON_AddStringToObject(root, "order_id", gw->order_id);
+  cJSON_AddRawToObject(root, "amount", amount_str);
+  cJSON_AddStringToObject(root, "feeType", "include");
+  cJSON_AddStringToObject(root, "payment_type", "qrnone");
+  cJSON_AddStringToObject(root, "agreement", gw->agreement);
+  cJSON_AddStringToObject(root, "device_id", gw->device_id);
+  cJSON_AddStringToObject(root, "language", "th");
+
+  char *body = cJSON_PrintUnformatted(root);
+
+  http_set_header(gw->http, "Content-Type", "application/json");
+  http_set_body(gw->http, body);
+  http_set_resp_opt(gw->http, false, true);
+  
+  const char *res = http_send(gw->http);
+  if(!res){
+    ESP_LOGI(TAG, "Send request fail");
+    cJSON_Delete(root);
+    free(body);
+    http_close(gw->http);
+    gw->http = NULL;
+
+    return VD_MSP_ERR_HTTP;
+  }
+
+  uint16_t http_code = http_get_code(gw->http);
+  if(http_code != 200){
+    ESP_LOGI(TAG, "API request fail, Code = %d", (int)http_code);
+    cJSON_Delete(root);
+    free(body);
+    http_close(gw->http);
+    gw->http = NULL;
+
+    return VD_MSP_ERR_API;
+  }
+
+  cJSON_Delete(root);
+  root = NULL;
+
+  free(body);
+
+  root = cJSON_Parse(res);
+  if(!root) {
+    gw_err = VD_MSP_ERR_JSON;
+    goto api_err_exit;
+  }
+
+  if (!cJSON_IsArray(root)) {
+    ESP_LOGE(TAG, "Expected JSON Array at root");
+    gw_err = VD_MSP_ERR_JSON;
+    goto api_err_exit;
+  }
+
+  cJSON *item = cJSON_GetArrayItem(root, 0);
+  if (!item || !cJSON_IsObject(item)) {
+    ESP_LOGE(TAG, "Item[0] is not a valid JSON Object");
+    gw_err = VD_MSP_ERR_JSON;
+    goto api_err_exit;
+  }
+
+  cJSON *status = cJSON_GetObjectItemCaseSensitive(item, "status");
+  if (cJSON_IsString(status) && status->valuestring) {
+    if(strcmp(status->valuestring, "success") != 0) {
+      ESP_LOGE(TAG, "API Error: status = %s", status->valuestring);
+      gw_err = VD_MSP_ERR_API;
+      goto api_err_exit;
+    }
+
+    cJSON *tx_id  = cJSON_GetObjectItemCaseSensitive(item, "transaction_ID");
+    cJSON *qr_url = cJSON_GetObjectItemCaseSensitive(item, "image_qrprom");
+
+    if (!tx_id->valuestring || !cJSON_IsString(tx_id)) {
+      ESP_LOGE(TAG, "transaction_ID not found");
+      gw_err = VD_MSP_ERR_API;
+      goto api_err_exit;
+    }
+
+    if (!qr_url->valuestring && !cJSON_IsString(qr_url)) {
+      ESP_LOGE(TAG, "image_qrprom not found");
+      gw_err = VD_MSP_ERR_API;
+      goto api_err_exit;
+    }
+
+    gw->transaction_id = (char*)calloc(1, strlen(tx_id->valuestring) + 1);
+    strcpy(gw->transaction_id, tx_id->valuestring);
+    
+    gw->qr_url = (char*)calloc(1, strlen(qr_url->valuestring) + 1);
+    strcpy(gw->qr_url, qr_url->valuestring);
+
+    gw->transaction_created = true;
+  }
+
+api_err_exit:
+
+  cJSON_Delete(root);
+  http_close(gw->http);
+  gw->http = NULL;
+
+  return gw_err;
+}
+
+// @note อย่าลืม free qr_png เอง และต้องเรียก vd_msp_promptpay_gateway_create_transaction ก่อนใช้งานฟังก์ชั่นนี้
+vd_msp_err_t vd_msp_promptpay_gateway_get_qr(vd_msp_promptpay_gateway_t *gw, uint8_t **out_qr_png, size_t *out_size){
+  if(!gw) return VD_MSP_ERR_INVALID_PARAM;
+  if(!gw->transaction_created || !gw->qr_url) return VD_MSP_ERR_NODATA;
+
+  vd_msp_err_t gw_err = VD_MSP_OK;
+
+  gw->http = http_open(gw->qr_url, HTTP_METHOD_GET);
+  if(!gw->http){
+    ESP_LOGI(TAG, "Can't allocate memory for http");
+    return VD_MSP_ERR_NO_MEM;
+  }
+
+  http_set_resp_opt(gw->http, false, true);
+  uint8_t *data = (uint8_t*)http_send(gw->http);
+  if(!data){
+    ESP_LOGI(TAG, "Send request fail");
+    gw_err = VD_MSP_ERR_HTTP;
+    goto api_err_exit;
+  }
+
+  uint16_t http_code = http_get_code(gw->http);
+  if(http_code != 200){
+    ESP_LOGI(TAG, "API request fail, Code = %d", (int)http_code);
+    gw_err = VD_MSP_ERR_API;
+    goto api_err_exit;
+  }
+
+  size_t body_size = http_get_body_len(gw->http);
+  uint8_t *buf = (uint8_t *)malloc(body_size);
+  if (!buf) {
+    http_close(gw->http);
+    gw_err = VD_MSP_ERR_NO_MEM;
+    goto api_err_exit;
+  }
+
+  memcpy(buf, data, body_size);
+  *out_qr_png = buf;
+  *out_size   = body_size;
+
+api_err_exit:
+  http_close(gw->http);
+  gw->http = NULL;
+
+  return gw_err;
+}
+
+vd_msp_err_t vd_msp_promptpay_gateway_get_payment_status(vd_msp_promptpay_gateway_t *gw, vd_msp_order_status_t *status){
+  if(!gw || !strlen(gw->order_id)) return VD_MSP_ERR_INVALID_PARAM;
+  if(!gw->transaction_created) return VD_MSP_ERR_NODATA;
+
+  vd_msp_err_t gw_err = VD_MSP_OK;
+
+  gw->http = http_open(VD_MSP_PRODUCTION_REDIRECT_SERVER_URL "CheckOrderID", HTTP_METHOD_POST);
+  if(!gw->http){
+    ESP_LOGI(TAG, "Can't allocate memory for http");
+    return VD_MSP_ERR_NO_MEM;
+  }
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "secret_id", gw->secret_id);
+  cJSON_AddStringToObject(root, "secret_key", gw->secret_key);
+  cJSON_AddStringToObject(root, "order_id", gw->order_id);
+
+  char *body = cJSON_PrintUnformatted(root);
+
+  http_set_header(gw->http, "Content-Type", "application/json");
+  http_set_body(gw->http, body);
+  http_set_resp_opt(gw->http, false, true);
+  
+  const char *res = http_send(gw->http);
+  if(!res){
+    ESP_LOGI(TAG, "Send request fail");
+    cJSON_Delete(root);
+    free(body);
+    http_close(gw->http);
+    gw->http = NULL;
+
+    return VD_MSP_ERR_HTTP;
+  }
+
+  uint16_t http_code = http_get_code(gw->http);
+  if(http_code != 200){
+    ESP_LOGI(TAG, "API request fail, Code = %d", (int)http_code);
+    gw_err = VD_MSP_ERR_API;
+    goto api_err_exit;
+  }
+
+  cJSON_Delete(root);
+
+  root = cJSON_Parse(res);
+
+  if (!cJSON_IsArray(root)) {
+    ESP_LOGE(TAG, "Expected JSON Array at root");
+    gw_err = VD_MSP_ERR_JSON;
+    goto api_err_exit;
+  }
+
+  cJSON *item = cJSON_GetArrayItem(root, 0);
+  if (!item || !cJSON_IsObject(item)) {
+    ESP_LOGE(TAG, "Item[0] is not a valid JSON Object");
+    gw_err = VD_MSP_ERR_JSON;
+    goto api_err_exit;
+  }
+
+  // ถ้าไปเช็ก order ที่ยังไม่ได้ทำรายการ หรือหมดอายุไปนานแล้ว จะเข้ากรณีนี้
+  cJSON *err_jstatus = cJSON_GetObjectItemCaseSensitive(item, "status");
+  if(err_jstatus){
+    ESP_LOGE(TAG, "status is a valid without order_id object, (this order not created!)");
+    gw_err = VD_MSP_OK;
+    *status = VD_MSP_ORDER_STATUS_ERROR;
+    goto api_err_exit;
+  }
+  
+  cJSON *order_id = cJSON_GetObjectItem(item, "order id");
+  if(!order_id|| !cJSON_IsObject(order_id)){
+      ESP_LOGE(TAG, "order id is not a valid JSON Object, (this order not created!)");
+      gw_err = VD_MSP_ERR_JSON;
+      goto api_err_exit;
+    }
+
+  cJSON *jstatus = cJSON_GetObjectItemCaseSensitive(order_id, "status");
+  if(!jstatus){
+    ESP_LOGE(TAG, "status invalid");
+    gw_err = VD_MSP_ERR_API;
+    goto api_err_exit;
+  }
+
+  if(strcmp(jstatus->valuestring, VD_MSP_ORDER_STATUS_ERROR_STR) == 0){
+    ESP_LOGE(TAG, "status invalid");
+    gw_err = VD_MSP_ERR_API;
+    *status = VD_MSP_ORDER_STATUS_ERROR;
+    goto api_err_exit;
+  }
+
+  if     (strcmp(jstatus->valuestring, VD_MSP_ORDER_STATUS_PENDING_STR) == 0) *status = VD_MSP_ORDER_STATUS_PENDING;
+  else if(strcmp(jstatus->valuestring, VD_MSP_ORDER_STATUS_SUCCESS_STR) == 0) *status = VD_MSP_ORDER_STATUS_SUCCESS;
+  else if(strcmp(jstatus->valuestring, VD_MSP_ORDER_STATUS_FAIL_STR)    == 0) *status = VD_MSP_ORDER_STATUS_FAIL;
+  else if(strcmp(jstatus->valuestring, VD_MSP_ORDER_STATUS_CANCEL_STR)  == 0) *status = VD_MSP_ORDER_STATUS_CANCEL;
+  else if(strcmp(jstatus->valuestring, VD_MSP_ORDER_STATUS_EXPIRED_STR) == 0) *status = VD_MSP_ORDER_STATUS_EXPIRED;
+
+  cJSON *jamount = cJSON_GetObjectItemCaseSensitive(order_id, "amount");
+  double amount_num = cjson_get_double(jamount, 0.0);
+  if(!amount_num){
+    ESP_LOGE(TAG, "amount invalid");
+    gw_err = VD_MSP_ERR_API;
+    *status = VD_MSP_ORDER_STATUS_ERROR;
+    goto api_err_exit;
+  }
+
+  // if(amount_num != gw->amount) ...
+
+api_err_exit:
+  cJSON_Delete(root);
+  http_close(gw->http);
+  gw->http = NULL;
+
+  return gw_err;
+}
+
+vd_msp_err_t vd_msp_promptpay_gateway_end_transaction(vd_msp_promptpay_gateway_t *gw){
+  if(!gw) return VD_MSP_ERR_INVALID_PARAM;
+  if(!gw->transaction_created) return VD_MSP_OK;
+
+  gw->http                = NULL;
+  gw->transaction_created = false;
+  gw->amount              = 0.0;
+
+  if(gw->transaction_id) free(gw->transaction_id);
+  if(gw->qr_url)         free(gw->qr_url);
+
+  memset(gw->order_id, '\0', sizeof(gw->order_id));
+
+  return VD_MSP_OK;
+}
+
+static vd_msp_promptpay_gateway_t *s_gw = NULL;
+static lv_obj_t *s_ta_amount = NULL;
+static lv_obj_t *s_qr_img    = NULL;
+static lv_obj_t *s_lbl_status = NULL;
+static lv_obj_t *s_btn_pay   = NULL;
+
+static lv_image_dsc_t s_dynamic_qr_dsc;
+static uint8_t *s_downloaded_png = NULL;
+static volatile bool s_polling_active = false;
+
+static lv_obj_t *s_numpad = NULL;
+
+/* Event เมื่อแตะช่องกรอกเงิน หรือเมื่อกดปิดคีย์บอร์ด */
+static void _ta_amount_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
+        // แตะช่องกรอกเงิน -> แสดง Numpad ขึ้นมา
+        if (s_numpad) {
+            lv_keyboard_set_textarea(s_numpad, s_ta_amount);
+            lv_obj_remove_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_numpad);
+        }
+    }
+}
+
+static void _numpad_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    // เมื่อกดปุ่มติ๊กถูก (Ready) หรือปุ่มปิด (Cancel) ให้ซ่อน Numpad
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* เธรดเบื้องหลัง: สร้าง Transaction -> โหลดรูป QR -> Polling ทุกๆ 3 วินาที */
+static void payment_worker_task(void *pvParam) {
+    double amount = *(double *)pvParam;
+    free(pvParam);
+
+    // 1. สร้าง Order ID แบบไม่ซ้ำด้วย Timestamp
+    char order_buf[32];
+    snprintf(order_buf, sizeof(order_buf), "ORD%lld", (long long)(esp_timer_get_time() / 1000));
+
+    vd_msp_promptpay_gateway_set_amount(s_gw, amount);
+    vd_msp_promptpay_gateway_set_order_id(s_gw, order_buf);
+    vd_msp_promptpay_gateway_set_device_id(s_gw, "ESP32P4_VEND_01");
+
+    // อัปเดตสถานะบน UI
+    if (lvgl_port_lock(portMAX_DELAY)) {
+        lv_label_set_text(s_lbl_status, "สถานะ: กำลังสร้างรายการ QR...");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xEAB308), 0); // สีเหลือง
+        lvgl_port_unlock();
+    }
+
+    // 2. เรียก API สร้าง Transaction
+    vd_msp_err_t err = vd_msp_promptpay_gateway_create_transaction(s_gw);
+    if (err != VD_MSP_OK) {
+        if (lvgl_port_lock(portMAX_DELAY)) {
+            lv_label_set_text_fmt(s_lbl_status, "สถานะ: สร้าง QR ไม่สำเร็จ (Err=%d)", err);
+            lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xEF4444), 0); // สีแดง
+            lv_obj_clear_state(s_btn_pay, LV_STATE_DISABLED);
+            lvgl_port_unlock();
+        }
+        vd_msp_promptpay_gateway_end_transaction(s_gw);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 3. โหลดไฟล์ภาพ PNG ของ QR Code จาก MoneySpace
+    uint8_t *png_raw = NULL;
+    size_t png_size = 0;
+    err = vd_msp_promptpay_gateway_get_qr(s_gw, &png_raw, &png_size);
+
+    if (err == VD_MSP_OK && png_raw) {
+        if (lvgl_port_lock(portMAX_DELAY)) {
+            if (s_downloaded_png) free(s_downloaded_png);
+            s_downloaded_png = png_raw;
+
+            // เตรียม Descriptor สำหรับ Image Widget (LVGL RAW Format)
+            s_dynamic_qr_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+            s_dynamic_qr_dsc.header.cf = LV_COLOR_FORMAT_RAW;
+            s_dynamic_qr_dsc.header.w = 0;
+            s_dynamic_qr_dsc.header.h = 0;
+            s_dynamic_qr_dsc.data_size = png_size;
+            s_dynamic_qr_dsc.data = s_downloaded_png;
+
+            lv_image_set_src(s_qr_img, &s_dynamic_qr_dsc);
+            lv_label_set_text(s_lbl_status, "สถานะ: รอการสแกนชำระเงิน...");
+            lvgl_port_unlock();
+        }
+    }
+
+    // 4. เริ่ม Polling ตรวจสอบยอดเงินทุกๆ 3 วินาที (วนรอบสูงสุด 60 ครั้ง = 3 นาที)
+    s_polling_active = true;
+    int retry_cnt = 0;
+
+    while (s_polling_active && retry_cnt++ < 60) {
+        vTaskDelay(pdMS_TO_TICKS(3000)); // หน่วงเวลา 3 วินาที
+
+        vd_msp_order_status_t pay_st;
+        vd_msp_err_t st_err = vd_msp_promptpay_gateway_get_payment_status(s_gw, &pay_st);
+
+        if (st_err == VD_MSP_OK) {
+            if (pay_st == VD_MSP_ORDER_STATUS_SUCCESS) {
+                if (lvgl_port_lock(portMAX_DELAY)) {
+                    lv_label_set_text(s_lbl_status, "สถานะ: ชำระเงินสำเร็จแล้ว! (Success)");
+                    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x22C55E), 0); // สีเขียว
+                    lv_obj_clear_state(s_btn_pay, LV_STATE_DISABLED);
+                    lvgl_port_unlock();
+                }
+                break; // จบขั้นตอนการจ่ายเงิน
+            } else if (pay_st == VD_MSP_ORDER_STATUS_EXPIRED || pay_st == VD_MSP_ORDER_STATUS_CANCEL) {
+                if (lvgl_port_lock(portMAX_DELAY)) {
+                    lv_label_set_text(s_lbl_status, "สถานะ: รายการหมดอายุหรือถูกยกเลิก");
+                    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xEF4444), 0);
+                    lv_obj_clear_state(s_btn_pay, LV_STATE_DISABLED);
+                    lvgl_port_unlock();
+                }
+                break;
+            }
+        }
+    }
+
+    vd_msp_promptpay_gateway_end_transaction(s_gw);
+    s_polling_active = false;
+    vTaskDelete(NULL);
+}
+
+/* Event เมื่อแตะปุ่ม "สร้าง QR ชำระเงิน" */
+static void _btn_create_qr_cb(lv_event_t *e) {
+    if (s_polling_active) return;
+
+    const char *amt_txt = lv_textarea_get_text(s_ta_amount);
+    double amount = atof(amt_txt);
+    if (amount <= 0.0) return;
+
+    lv_obj_add_state(s_btn_pay, LV_STATE_DISABLED);
+
+    double *p_amt = (double *)malloc(sizeof(double));
+    *p_amt = amount;
+    xTaskCreatePinnedToCore(payment_worker_task, "pay_task", 12 * 1024, p_amt, 10, NULL, 0);
+}
+
+/* Event ปุ่มลัดใส่จำนวนเงินสำเร็จรูป (10฿, 20฿, 50฿, 100฿) */
+static void _btn_quick_amount_cb(lv_event_t *e) {
+    const char *amt = (const char *)lv_event_get_user_data(e);
+    lv_textarea_set_text(s_ta_amount, amt);
+}
+
+/* ฟังก์ชันสร้างหน้าจอ PromptPay UI แบบเรียบง่าย */
+void create_simple_promptpay_ui(lv_obj_t *parent) {
+    // กำหนด Keys เริ่มต้น
+    if (!s_gw) {
+        s_gw = vd_msp_promptpay_gateway_init("V5N0B0QSG31Z14S2FE62", 
+                                            "3e68yE1E15zS33m1nyHPznh70e7vFq0yY853D0aGYbLJdMjup5GijQbQ5ZD9J0TJkVOIV9L40uW3XYiq", 
+                                            "1");
+    }
+
+    // 1. กล่องการ์ดหน้าต่างชำระเงิน จัดกึ่งกลางจอ
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_size(card, 400, 560);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // 2. ชื่อหัวข้อ
+    lv_obj_t *lbl_title = lv_label_create(card);
+    lv_label_set_text(lbl_title, "ชำระเงินผ่าน PromptPay");
+    lv_obj_set_style_text_color(lbl_title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl_title, &anuphan_bold_18, 0);
+
+    // 3. แถวระบุจำนวนเงิน (Label + TextArea)
+    lv_obj_t *row_amt = lv_obj_create(card);
+    lv_obj_set_size(row_amt, lv_pct(100), 50);
+    lv_obj_set_style_bg_opa(row_amt, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row_amt, 0, 0);
+    lv_obj_set_style_pad_all(row_amt, 0, 0);
+    lv_obj_set_flex_flow(row_amt, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row_amt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *lbl_amt_tag = lv_label_create(row_amt);
+    lv_label_set_text(lbl_amt_tag, "ยอดเงิน (บาท): ");
+    lv_obj_set_style_text_color(lbl_amt_tag, lv_color_hex(0xCBD5E1), 0);
+    lv_obj_set_style_text_font(lbl_amt_tag, &anuphan_16, 0);
+
+    s_ta_amount = lv_textarea_create(row_amt);
+    lv_obj_set_size(s_ta_amount, 130, 42);
+    lv_textarea_set_text(s_ta_amount, "1.00");
+    lv_textarea_set_one_line(s_ta_amount, true);
+    lv_textarea_set_max_length(s_ta_amount, 8); // ป้องกันกรอกยาวเกิน
+    lv_textarea_set_accepted_chars(s_ta_amount, "0123456789."); // รับเฉพาะตัวเลขและจุด
+    lv_obj_set_style_text_font(s_ta_amount, &anuphan_16, 0);
+    lv_obj_add_event_cb(s_ta_amount, _ta_amount_event_cb, LV_EVENT_ALL, NULL);
+
+    s_numpad = lv_keyboard_create(parent);
+    lv_keyboard_set_mode(s_numpad, LV_KEYBOARD_MODE_NUMBER); // ปรับเป็นปุ่มตัวเลขขนาดใหญ่
+    lv_keyboard_set_textarea(s_numpad, s_ta_amount);
+    lv_obj_set_size(s_numpad, 360, 220);
+    lv_obj_align(s_numpad, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(s_numpad, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_radius(s_numpad, 12, 0);
+    lv_obj_add_event_cb(s_numpad, _numpad_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN); // ซ่อนไว้ตอนเริ่มต้น
+
+    // 4. ปุ่มลัดเลือกราคาด่วน [1฿] [20฿] [50฿] [100฿]
+    lv_obj_t *row_preset = lv_obj_create(card);
+    lv_obj_set_size(row_preset, lv_pct(100), 40);
+    lv_obj_set_style_bg_opa(row_preset, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row_preset, 0, 0);
+    lv_obj_set_style_pad_all(row_preset, 0, 0);
+    lv_obj_set_flex_flow(row_preset, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row_preset, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    const char *presets[] = {"1.00", "20.00", "50.00", "100.00"};
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *btn = lv_button_create(row_preset);
+        lv_obj_set_size(btn, 65, 32);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x334155), 0);
+        lv_obj_add_event_cb(btn, _btn_quick_amount_cb, LV_EVENT_CLICKED, (void *)presets[i]);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text_fmt(lbl, "%d฿", atoi(presets[i]));
+        lv_obj_set_style_text_font(lbl, &anuphan_14, 0);
+        lv_obj_center(lbl);
+    }
+
+    // 5. ปุ่มสั่งสร้าง QR Code
+    s_btn_pay = lv_button_create(card);
+    lv_obj_set_size(s_btn_pay, lv_pct(90), 44);
+    lv_obj_set_style_bg_color(s_btn_pay, lv_color_hex(0x2563EB), 0);
+    lv_obj_set_style_radius(s_btn_pay, 8, 0);
+    lv_obj_add_event_cb(s_btn_pay, _btn_create_qr_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_btn = lv_label_create(s_btn_pay);
+    lv_label_set_text(lbl_btn, "สร้าง QR ชำระเงิน");
+    lv_obj_set_style_text_font(lbl_btn, &anuphan_semi_bold_16, 0);
+    lv_obj_center(lbl_btn);
+
+    // 6. พื้นที่แสดง QR Code
+    lv_obj_t *qr_box = lv_obj_create(card);
+    lv_obj_set_size(qr_box, 290, 290);
+    lv_obj_set_style_bg_color(qr_box, lv_color_white(), 0);
+    lv_obj_set_style_radius(qr_box, 8, 0);
+    lv_obj_set_style_pad_all(qr_box, 5, 0);
+    lv_obj_set_scrollable(qr_box, false);
+
+    s_qr_img = lv_image_create(qr_box);
+    lv_obj_set_size(s_qr_img, 280, 280);
+    lv_obj_center(s_qr_img);
+
+    // 7. ข้อความแจ้งเตือนสถานะ
+    s_lbl_status = lv_label_create(card);
+    lv_label_set_text(s_lbl_status, "สถานะ: พร้อมทำรายการ");
+    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x94A3B8), 0);
+    lv_obj_set_style_text_font(s_lbl_status, &anuphan_14, 0);
+}
+
+static lv_obj_t *s_ta_manual_order  = NULL;
+static lv_obj_t *s_lbl_manual_result = NULL;
+static lv_obj_t *s_btn_manual_check  = NULL;
+static lv_obj_t *s_kb_manual         = NULL;
+
+/* Task สำหรับเรียกใช้ vd_msp_promptpay_gateway_get_payment_status โดยตรง */
+/* Task ตรวจสอบสถานะ พร้อมดักจับ NULL Pointer ป้องกัน Crash */
+static void manual_order_check_task(void *pvParam) {
+    char *input_order_id = (char *)pvParam;
+
+    // 1. ตรวจสอบและ Auto-Init หาก s_gw ยังเป็น NULL
+    if (!s_gw) {
+        s_gw = vd_msp_promptpay_gateway_init("V5N0B0QSG31Z14S2FE62", 
+                                             "3e68yE1E15zS33m1nyHPznh70e7vFq0yY853D0aGYbLJdMjup5GijQbQ5ZD9J0TJkVOIV9L40uW3XYiq", 
+                                             "1");
+    }
+
+    if (!s_gw) {
+        ESP_LOGE(TAG, "Cannot init s_gw gateway structure!");
+        if (lvgl_port_lock(portMAX_DELAY)) {
+            lv_label_set_text(s_lbl_manual_result, "ผิดพลาด: Gateway ยังไม่ถูกเริ่มระบบ");
+            lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEF4444), 0);
+            lv_obj_clear_state(s_btn_manual_check, LV_STATE_DISABLED);
+            lvgl_port_unlock();
+        }
+        free(input_order_id);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // อัปเดต UI แสดงว่ากำลังตรวจสอบ
+    if (lvgl_port_lock(portMAX_DELAY)) {
+        lv_label_set_text(s_lbl_manual_result, "กำลังตรวจสอบสถานะ...");
+        lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEAB308), 0);
+        lvgl_port_unlock();
+    }
+
+    // 2. ปลอดภัยแล้ว คัดลอก Order ID ลง struct
+    strncpy(s_gw->order_id, input_order_id, sizeof(s_gw->order_id) - 1);
+    s_gw->order_id[sizeof(s_gw->order_id) - 1] = '\0';
+    s_gw->transaction_created = true; // ตั้งค่า true เพื่อให้ผ่านเงื่อนไขเช็คในฟังก์ชัน
+
+    // 3. เรียกฟังก์ชันตรวจสอบสถานะของคุณโดยตรง
+    vd_msp_order_status_t status = VD_MSP_ORDER_STATUS_ERROR;
+    vd_msp_err_t err = vd_msp_promptpay_gateway_get_payment_status(s_gw, &status);
+
+    // 4. แสดงผลลัพธ์ออกจอ
+    if (lvgl_port_lock(portMAX_DELAY)) {
+        if (err != VD_MSP_OK) {
+            lv_label_set_text_fmt(s_lbl_manual_result, "ผิดพลาด: ตรวจสอบไม่สำเร็จ (Err Code: %d)", err);
+            lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEF4444), 0);
+        } else {
+            switch (status) {
+                case VD_MSP_ORDER_STATUS_SUCCESS:
+                    lv_label_set_text(s_lbl_manual_result, "ผลลัพธ์: ชำระเงินสำเร็จ (Pay Success)");
+                    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0x22C55E), 0); // สีเขียว
+                    break;
+                case VD_MSP_ORDER_STATUS_PENDING:
+                    lv_label_set_text(s_lbl_manual_result, "ผลลัพธ์: รอการชำระเงิน (Pending)");
+                    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0x38BDF8), 0); // สีฟ้า
+                    break;
+                case VD_MSP_ORDER_STATUS_FAIL:
+                    lv_label_set_text(s_lbl_manual_result, "ผลลัพธ์: ทำรายการไม่สำเร็จ (Fail)");
+                    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEF4444), 0);
+                    break;
+                case VD_MSP_ORDER_STATUS_CANCEL:
+                    lv_label_set_text(s_lbl_manual_result, "ผลลัพธ์: รายการถูกยกเลิก (Cancel)");
+                    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEF4444), 0);
+                    break;
+                case VD_MSP_ORDER_STATUS_EXPIRED:
+                    lv_label_set_text(s_lbl_manual_result, "ผลลัพธ์: รายการหมดอายุ (Expired)");
+                    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEF4444), 0);
+                    break;
+                default:
+                    lv_label_set_text(s_lbl_manual_result, "ผลลัพธ์: ไม่พบรายการหรือสถานะผิดพลาด");
+                    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0xEF4444), 0);
+                    break;
+            }
+        }
+
+        lv_obj_clear_state(s_btn_manual_check, LV_STATE_DISABLED);
+        lvgl_port_unlock();
+    }
+
+    free(input_order_id);
+    vTaskDelete(NULL);
+}
+
+/* Callback เมื่อแตะปุ่ม "ตรวจสอบสถานะ" */
+static void _btn_manual_check_cb(lv_event_t *e) {
+    const char *text = lv_textarea_get_text(s_ta_manual_order);
+    if (!text || strlen(text) == 0) return;
+
+    lv_obj_add_state(s_btn_manual_check, LV_STATE_DISABLED);
+    if (s_kb_manual) lv_obj_add_flag(s_kb_manual, LV_OBJ_FLAG_HIDDEN);
+
+    char *order_copy = strdup(text);
+    xTaskCreate(manual_order_check_task, "ord_chk_task", 12 * 1024, order_copy, 4, NULL);
+}
+
+/* Event ซ่อน/แสดง คีย์บอร์ดพิมพ์ข้อความ */
+static void _ta_manual_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
+        if (s_kb_manual) {
+            lv_keyboard_set_textarea(s_kb_manual, s_ta_manual_order);
+            lv_obj_remove_flag(s_kb_manual, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_kb_manual);
+        }
+    }
+}
+
+static void _kb_manual_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(s_kb_manual, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void create_simple_order_checker_ui(lv_obj_t *parent) {
+    if (!parent) parent = lv_screen_active();
+
+    // 1. กล่องการ์ดหลัก
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_size(card, 420, 320);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    // 2. ชื่อหัวข้อ
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "ตรวจสอบสถานะ Order ID");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &anuphan_bold_18, 0);
+
+    // 3. ช่องกรอกหมายเลข Order ID
+    s_ta_manual_order = lv_textarea_create(card);
+    lv_obj_set_size(s_ta_manual_order, lv_pct(100), 44);
+    lv_textarea_set_placeholder_text(s_ta_manual_order, "กรอก Order ID เช่น ORD172728...");
+    lv_textarea_set_one_line(s_ta_manual_order, true);
+    lv_obj_set_style_text_font(s_ta_manual_order, &anuphan_16, 0);
+    lv_obj_add_event_cb(s_ta_manual_order, _ta_manual_event_cb, LV_EVENT_ALL, NULL);
+
+    // 4. ปุ่มกดตรวจสอบ
+    s_btn_manual_check = lv_button_create(card);
+    lv_obj_set_size(s_btn_manual_check, lv_pct(100), 44);
+    lv_obj_set_style_bg_color(s_btn_manual_check, lv_color_hex(0x2563EB), 0);
+    lv_obj_set_style_radius(s_btn_manual_check, 8, 0);
+    lv_obj_add_event_cb(s_btn_manual_check, _btn_manual_check_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_btn = lv_label_create(s_btn_manual_check);
+    lv_label_set_text(lbl_btn, "ตรวจสอบสถานะ");
+    lv_obj_set_style_text_font(lbl_btn, &anuphan_semi_bold_16, 0);
+    lv_obj_center(lbl_btn);
+
+    // 5. ป้ายข้อความแสดงผลการตรวจสอบ
+    s_lbl_manual_result = lv_label_create(card);
+    lv_label_set_text(s_lbl_manual_result, "ระบุหมายเลข Order ID แล้วกดตรวจสอบ");
+    lv_obj_set_style_text_color(s_lbl_manual_result, lv_color_hex(0x94A3B8), 0);
+    lv_obj_set_style_text_font(s_lbl_manual_result, &anuphan_16, 0);
+    lv_obj_set_style_pad_top(s_lbl_manual_result, 10, 0);
+
+    // 6. แป้นพิมพ์ QWERTY
+    s_kb_manual = lv_keyboard_create(parent);
+    lv_keyboard_set_textarea(s_kb_manual, s_ta_manual_order);
+    lv_obj_set_size(s_kb_manual, 650, 230);
+    lv_obj_align(s_kb_manual, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_add_event_cb(s_kb_manual, _kb_manual_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(s_kb_manual, LV_OBJ_FLAG_HIDDEN);
+}
+
+static lv_obj_t *s_coin_total_lbl = NULL;
+static lv_obj_t *s_coin_count_lbl = NULL;
+
+/* 1. สร้างการ์ดแสดงยอดเงินหยอดเหรียญ */
+void create_simple_coin_counter_ui(lv_obj_t *parent) {
+    if (!parent) parent = lv_screen_active();
+
+    // กล่องการ์ดพื้นหลังสีเข้ม (320 x 180 px) วางกึ่งกลางจอ
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_size(card, 320, 180);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    // ป้ายข้อความหัวข้อ
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "ยอดเงินที่หยอด");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x94A3B8), 0);
+    lv_obj_set_style_text_font(title, &anuphan_16, 0);
+
+    // ตัวเลขยอดเงินรวม (สีเขียว ตัวหนา ขนาด 26px)
+    s_coin_total_lbl = lv_label_create(card);
+    lv_label_set_text(s_coin_total_lbl, "0.00 ฿");
+    lv_obj_set_style_text_color(s_coin_total_lbl, lv_color_hex(0x22C55E), 0);
+    lv_obj_set_style_text_font(s_coin_total_lbl, &anuphan_bold_26, 0);
+
+    // แสดงจำนวนเหรียญสะสม
+    s_coin_count_lbl = lv_label_create(card);
+    lv_label_set_text(s_coin_count_lbl, "จำนวนเหรียญ: 0 เหรียญ");
+    lv_obj_set_style_text_color(s_coin_count_lbl, lv_color_hex(0x64748B), 0);
+    lv_obj_set_style_text_font(s_coin_count_lbl, &anuphan_14, 0);
+}
+
+void update_coin_display(double total_baht, uint32_t total_coins) {
+    if (lvgl_port_lock(100)) {
+        if (s_coin_total_lbl) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.2f บาท", total_baht); // ใช้ snprintf ของ C แทน
+            lv_label_set_text(s_coin_total_lbl, buf);
+        }
+        if (s_coin_count_lbl) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "จำนวนเหรียญ: %u เหรียญ", (unsigned)total_coins);
+            lv_label_set_text(s_coin_count_lbl, buf);
+        }
+        lvgl_port_unlock();
+    }
+}
+
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+
+#define COIN_INPUT_GPIO         GPIO_NUM_2
+#define COIN_SAMPLE_PERIOD_MS   2     // สุ่มอ่านทุก 2ms (พัลส์ 20ms จะถูกอ่านถึง 10 ครั้ง)
+#define COIN_DEBOUNCE_MIN_MS    8     // ต้อง LOW ต่อเนื่องเกิน 8ms ถึงนับว่าเป็นพัลส์จริง (กัน Noise)
+#define COIN_TRAIN_TIMEOUT_MS   250   // ถ้าไม่มีพัลส์เข้ามาเกิน 250ms ถือว่าจบ 1 เหรียญ
+
+static double   s_accum_baht  = 0.0;
+static uint32_t s_accum_coins = 0;
+
+/* ฟังก์ชันตั้งค่า GPIO 2 เป็น Input พร้อมเปิดตัวต้านทาน Pull-up ภายใน */
+static void coin_gpio_init(void) {
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << COIN_INPUT_GPIO),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,   // ปกติขาจะลอยเป็น HIGH
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,    // ปิด Interrupt ทั้งหมด
+    };
+    gpio_config(&io_conf);
+}
+
+/* Task วนลูปอ่านสัญญาณแบบ Polling */
+void coin_reader_task(void *pvParam) {
+    coin_gpio_init();
+
+    uint32_t low_duration_ms     = 0;
+    bool     pulse_registered    = false;
+    uint32_t current_coin_pulses = 0;
+    TickType_t last_pulse_tick   = 0;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(COIN_SAMPLE_PERIOD_MS));
+
+        int level = gpio_get_level(COIN_INPUT_GPIO);
+
+        // 1. ตรวจสอบสถานะ Active LOW (0 = มีสัญญาณพัลส์เข้ามา)
+        if (level == 0) {
+            low_duration_ms += COIN_SAMPLE_PERIOD_MS;
+
+            // ตรวจสอบว่าสัญญาณ LOW แช่ยาวเกินค่า Debounce หรือไม่ (กันไฟกระชาก/สัญญาณรบกวน)
+            if (!pulse_registered && (low_duration_ms >= COIN_DEBOUNCE_MIN_MS)) {
+                current_coin_pulses++;
+                pulse_registered = true;
+                last_pulse_tick  = xTaskGetTickCount();
+                ESP_LOGI("COIN", "Pulse detected! (Count in train: %u)", (unsigned)current_coin_pulses);
+            }
+        } else {
+            // สัญญาณกลับมาเป็น HIGH (Idle)
+            low_duration_ms  = 0;
+            pulse_registered = false;
+        }
+
+        // 2. ตรวจสอบ Timeout สิ้นสุดชุดพัลส์ของเหรียญนั้นๆ (Pulse Train Timeout)
+        if (current_coin_pulses > 0) {
+            TickType_t elapsed_ticks = xTaskGetTickCount() - last_pulse_tick;
+            
+            if (elapsed_ticks > pdMS_TO_TICKS(COIN_TRAIN_TIMEOUT_MS)) {
+                // เครื่องหยอดเหรียญทั่วไป: 1 พัลส์ = 1 บาท, 5 พัลส์ = 5 บาท, 10 พัลส์ = 10 บาท
+                double coin_val = (double)current_coin_pulses;
+
+                s_accum_baht  += coin_val;
+                s_accum_coins += 1;
+
+                ESP_LOGI("COIN", "Coin Inserted: %.2f THB (Total: %.2f THB, %u Coins)", 
+                         coin_val, s_accum_baht, (unsigned)s_accum_coins);
+
+                // สั่งอัปเดตตัวเลขขึ้นหน้าจอ LVGL ทันที
+                update_coin_display(s_accum_baht, s_accum_coins);
+
+                // ล้างค่านับพัลส์เพื่อรอเหรียญถัดไป
+                current_coin_pulses = 0;
+            }
+        }
+    }
+}
+
+vd_menu_content_t *content;
+
+const char *setting_title[] = {"ตั้งค่าทั่วไป", "สินค้าและช่องจำหน่าย", "รายการรับ-จ่าย", "ระบบชำระเงิน", "เครือข่าย", "ทดสอบอุปกรณ์", "จัดการโฆษณา"};
+
+typedef enum {
+    /* กลุ่มที่ 1: การขายและสต็อก */
+    MENU_ID_PRODUCT_MGR = 1,
+    MENU_ID_PAYMENT,
+    MENU_ID_TRANSACTIONS,
+
+    /* กลุ่มที่ 2: ระบบและสื่อ */
+    MENU_ID_GENERAL,
+    MENU_ID_ADS_MGR,
+
+    /* กลุ่มที่ 3: งานช่างและเครือข่าย */
+    MENU_ID_NETWORK,
+    MENU_ID_DEV_TEST,
+    MENU_ID_FILE_MGR,
+} vd_menu_id_t;
+
+void create_settings_page_view(vd_menu_content_t *content);
+void create_network_settings_page(vd_menu_content_t *content);
+void create_products_settings_page(vd_menu_content_t *content);
+void create_file_setting_page(vd_menu_content_t *content);
+
+static uint32_t s_pending_menu_id = 0;
+static bool     s_menu_switch_queued = false;
+
+/* ทำงานหลัง event/indev จบสมบูรณ์แล้ว — ปลอดภัยที่จะลบ-สร้าง object ได้เต็มที่ */
+static void _menu_switch_async_cb(void *param) {
+    (void)param;
+    s_menu_switch_queued = false;
+
+    if (!content) return;
+
+    /* ตัดการอ้างอิงของระบบสัมผัสออกจาก object เก่าทั้งหมดก่อนลบ */
+    lv_indev_reset(NULL, NULL);
+
+    vd_menu_content_clear(content);
+
+    switch (s_pending_menu_id) {
+        case MENU_ID_GENERAL:     create_settings_page_view(content);     break;
+        case MENU_ID_NETWORK:     create_network_settings_page(content);  break;
+        case MENU_ID_PRODUCT_MGR: create_products_settings_page(content); break;
+        case MENU_ID_FILE_MGR:    create_file_setting_page(content);      break;
+        default: break;
+    }
+}
+
+static void _on_sidebar_menu_click(vd_menu_sidebar_t *sidebar, uint32_t item_id, const char *title, void *user_data) {
+    if (item_id == VD_MENU_EXIT_ITEM_ID) {
+        printf("กดปุ่มออกจากหน้าตั้งค่า");
+        // สลับกลับหน้าขาย หรือปิดหน้าตั้งค่า
+        return;
+    }
+
+     s_pending_menu_id = item_id;          /* เก็บ id ล่าสุดไว้ */
+
+    if (!s_menu_switch_queued) {          /* กันกดรัว ๆ แล้วคิวซ้อนกันหลายอัน */
+        s_menu_switch_queued = true;
+        lv_async_call(_menu_switch_async_cb, NULL);
+    }
+}
+
+static const char *s_thai_days[] = {
+    "วันอาทิตย์", "วันจันทร์", "วันอังคาร", "วันพุธ", "วันพฤหัสบดี", "วันศุกร์", "วันเสาร์"
+};
+
+static const char *s_thai_months[] = {
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
+};
+
+/* 2. โครงสร้าง Handle ตัวเก็บพอยน์เตอร์ Label ทั้งสองตัว */
+typedef struct {
+    lv_obj_t *time_label;
+    lv_obj_t *date_label;
+} time_display_handles_t;
+
+void get_thai_date_string(time_t *now, char *buf, size_t buf_size) {
+    if (!now || !buf || buf_size == 0) return;
+
+    struct tm timeinfo;
+    localtime_r(now, &timeinfo);
+
+    int year_be = (timeinfo.tm_year + 1900) + 543;
+
+    snprintf(buf, buf_size, "%sที่ %d %s %d",
+             s_thai_days[timeinfo.tm_wday],
+             timeinfo.tm_mday,
+             s_thai_months[timeinfo.tm_mon],
+             year_be);
+}
+
+/* 4. ฟังก์ชันแปลงเวลาภาษาไทย */
+void get_thai_time_string(time_t *now, char *buf, size_t buf_size) {
+    if (!now || !buf || buf_size == 0) return;
+
+    struct tm timeinfo;
+    localtime_r(now, &timeinfo);
+
+    snprintf(buf, buf_size, "%02d:%02d:%02d น.",
+             timeinfo.tm_hour,
+             timeinfo.tm_min,
+             timeinfo.tm_sec);
+}
+
+/* 5. Callback ของ Timer (วางไว้ก่อนหน้าจุดที่เรียกสร้าง timer เสมอ) */
+void time_cb(lv_timer_t *tmr) {
+    if (!tmr) return; // ป้องกัน Crash หากมีการส่ง NULL เข้ามา
+
+    time_display_handles_t *handles = (time_display_handles_t *)lv_timer_get_user_data(tmr);
+    if (!handles || !handles->time_label || !handles->date_label) return;
+
+    time_t now = time(NULL);
+
+    char time_str[32];
+    char date_str[128];
+
+    get_thai_time_string(&now, time_str, sizeof(time_str));
+    get_thai_date_string(&now, date_str, sizeof(date_str));
+
+    lv_label_set_text(handles->time_label, time_str);
+    lv_label_set_text(handles->date_label, date_str);
+}
+
+/* ฟังก์ชันตัวช่วยลบ Timer อัตโนมัติเมื่อ Label โดนทำลาย */
+static void _auto_delete_timer_cb(lv_event_t *e) {
+    lv_timer_t *tmr = (lv_timer_t *)lv_event_get_user_data(e);
+    if (tmr) lv_timer_delete(tmr);
+}
+
+void create_settings_page_view(vd_menu_content_t *content) {
+  // 4. สร้างหัวข้อหลักบนสุด (Main Title)
+    vd_menu_content_add_title(content, "ตั้งค่าทั่วไป");
+
+    // ── หมวดที่ 1: ข้อมูลเครื่อง (sub_frame กรอบสีเขียว) ──
+    vd_menu_sub_frame_t *frame_info = vd_menu_sub_frame_create(content, "ข้อมูลเครื่อง");
+
+    // แถวที่ 1: ชื่อเครื่อง (ใช้ Helper สร้าง Text Input ลงกล่องสีเหลือง)
+    vd_menu_sub_content_add_text_input(frame_info,
+                                      "ชื่อเครื่อง",
+                                      "ใช้แสดงบนหน้าจอและในรายงานการขาย ยาวได้สูงสุด 24 ตัวอักษร",
+                                      "VD-ASM-001", 24);
+
+    // แถวที่ 2: รหัสเครื่อง (Serial No.) (ใช้ Slot อิสระ นำ Badge + ปุ่ม Copy มารวมกัน)
+    lv_obj_t *slot_serial = vd_menu_sub_content_create(frame_info,
+                                                       "รหัสเครื่อง (Serial No.)",
+                                                       "รหัสประจำเครื่อง ใช้อ้างอิงเมื่อติดต่อศูนย์บริการ");
+    // วาง Badge
+    lv_obj_t *badge = lv_label_create(slot_serial);
+    lv_label_set_text(badge, "VM-2026-0135");
+    lv_obj_set_style_text_font(badge, &anuphan_semi_bold_16, 0);
+
+    // วางปุ่ม Copy ข้างๆ
+    lv_obj_t *btn_copy = lv_button_create(slot_serial);
+    lv_obj_set_size(btn_copy, 32, 32);
+    lv_obj_t *ic = lv_label_create(btn_copy);
+    lv_label_set_text(ic, "\uf0c5"); // Font Awesome Copy
+    lv_obj_center(ic);
+
+    // แถวที่ 3: สถานที่ตั้ง
+    vd_menu_sub_content_add_text_input(frame_info,
+                                      "สถานที่ตั้ง",
+                                      "ระบุตำแหน่งติดตั้ง ช่วยในการหาเครื่องและจัดสายเติมสินค้า",
+                                      "อาคารเรียนรวม ชั้น 1 โซน B", 60);
+
+    vd_menu_sub_content_add_static_badge(frame_info,
+                                        "เวอร์ชันซอฟต์แวร์",
+                                        "อัปเดตล่าสุด 12 ส.ค. 2569",
+                                        "เวอร์ชัน 2.4.1 (ล่าสุด)");
+
+    vd_menu_sub_frame_t *frame_language = vd_menu_sub_frame_create(content, "ภาษา");
+    const char *lang_choices[] = {"ไทย", "English"};
+    vd_menu_sub_content_add_button_group(frame_language,
+                                      "ภาษาของระบบ",
+                                      "ภาษาของหน้า interface ทั้งฝั่งลูกค้าและระบบ",
+                                      lang_choices, 2, 0,
+                                      NULL, NULL);
+
+    vd_menu_sub_frame_t *frame_time = vd_menu_sub_frame_create(content, "วันที่และเวลา");
+    vd_menu_sub_content_add_switch(frame_time,
+                                  "ซิงค์เวลาอัตโนมัติ",
+                                  "รับเวลาจากเซิร์ฟเวอร์อินเทอร์เน็ต (NTP) เมื่อเชื่อมต่อเครือข่าย",
+                                  true, NULL, NULL);
+    lv_obj_t *timenow_bg = vd_menu_sub_content_create(frame_time, "เวลาปัจจุบันของระบบ", NULL);
+
+    // 2. ปรับกล่องนี้ให้เรียงเป็นแนวตั้ง (บนลงล่าง) และผลักชิดขวาสุด
+    lv_obj_set_flex_flow(timenow_bg, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(timenow_bg,
+                          LV_FLEX_ALIGN_CENTER, /* แกนหลัก (แนวตั้ง): กึ่งกลาง */
+                          LV_FLEX_ALIGN_END,    /* แกนตัด (แนวนอน): ดันเนื้อหาทั้งหมดชิดขวาสุด */
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(timenow_bg, 2, 0); /* ระยะห่างระหว่างบรรทัดเวลาและวันที่ */
+
+    // 3. บรรทัดบน: เวลาปัจจุบัน (สร้างก่อน จะอยู่ด้านบนอัตโนมัติ)
+    lv_obj_t *timenow_txt = lv_label_create(timenow_bg);
+    lv_obj_set_style_text_font(timenow_txt, &anuphan_bold_16, 0);
+    lv_obj_set_style_text_color(timenow_txt, VD_MENU_COLOR_ACCENT, 0);
+
+    lv_obj_t *timenow_full_txt = lv_label_create(timenow_bg);
+    lv_obj_set_style_text_font(timenow_full_txt, &anuphan_12, 0);
+    lv_obj_set_style_text_color(timenow_full_txt, lv_color_hex(0x9CA3AF), 0);
+
+    static time_display_handles_t s_time_handles;
+    s_time_handles.time_label = timenow_txt;
+    s_time_handles.date_label = timenow_full_txt;
+
+    lv_timer_t *timenow_timer = lv_timer_create(time_cb, 500, &s_time_handles);
+    lv_obj_add_event_cb(timenow_txt, _auto_delete_timer_cb, LV_EVENT_DELETE, timenow_timer);
+
+    vd_menu_sub_frame_t *frame_display = vd_menu_sub_frame_create(content, "จอภาพและระบบเสียง");
+    vd_menu_sub_content_add_slider(frame_display, "\uf185", "ความสว่างหน้าจอ", "แนะนำ 70-85% สำหรับตู้ในร่ม, 95% ขึ้นไปสำหรับจุดที่แดดส่อง", 20, 100, 80, "%", NULL);
+
+    vd_menu_sub_frame_t *frame_operation = vd_menu_sub_frame_create(content, "ระยะเวลาให้บริการ");
+    lv_obj_t *svc_time = vd_menu_sub_content_add_time_range(frame_operation, "เวลาเปิด-ปิดให้บริการ", "ปรับได้ทีละ 15 นาที", "06:00", "22:00", NULL, NULL);
+
+    // ปรับ Step ของนาทีเป็น 15 นาที (ชม. ทีละ 1)
+    vd_menu_time_range_set_step(svc_time, 1, 5, 1);
+}
+
+void create_network_settings_page(vd_menu_content_t *content) {
+    // 1. หัวข้อหน้าหลัก
+    vd_menu_content_add_title(content, "เครือข่าย");
+
+    // ── การ์ดที่ 1: สถานะการเชื่อมต่อ ──[cite: 15]
+    vd_menu_sub_frame_t *card_status = vd_menu_sub_frame_create(content, "สถานะการเชื่อมต่อ");
+
+    // แถวที่ 1: เชื่อมต่อผ่าน (Wi-Fi / สาย LAN)[cite: 15]
+    const char *net_types[] = {"Wi-Fi", "สาย LAN"};
+    vd_menu_sub_content_add_button_group(card_status, "เชื่อมต่อผ่าน", "เลือกช่องทางหลักที่เครื่องใช้เชื่อมต่ออินเทอร์เน็ต", net_types, 2, 0, NULL, NULL);
+
+    // แถวที่ 2: เครือข่ายปัจจุบัน (ชื่อ + แท่งสัญญาณ)[cite: 15]
+    lv_obj_t *slot_net = vd_menu_sub_content_create(card_status, "เครือข่ายปัจจุบัน", "ชื่อเครือข่ายที่กำลังใช้งานอยู่");
+    lv_obj_t *net_lbl = lv_label_create(slot_net);
+    lv_label_set_text(net_lbl, "Vending-Office-5G");
+    lv_obj_set_style_text_font(net_lbl, &anuphan_bold_16, 0);
+    vd_menu_signal_bars_create(slot_net, 4); // สัญญาณ 4 ขีดเต็ม
+
+    // แถวที่ 3: หมายเลข IP (พร้อมปุ่มคัดลอก)[cite: 15]
+    vd_menu_sub_content_add_copyable_badge(card_status, "หมายเลข IP", "ใช้สำหรับเข้าถึงเครื่องจากระยะไกลในวงเครือข่ายเดียวกัน", "192.168.1.105", NULL, NULL);
+
+    // แถวที่ 4: เวลาออนไลน์ต่อเนื่อง[cite: 15]
+    vd_menu_sub_content_add_static_badge(card_status, "เวลาที่ออนไลน์ต่อเนื่อง", "นับตั้งแต่เชื่อมต่อสำเร็จครั้งล่าสุด", "2 วัน 03:14:52");
+
+    // แถวที่ 5: ทดสอบการเชื่อมต่อ (Ping)[cite: 15]
+    lv_obj_t *ping_result_lbl = NULL;
+    vd_menu_sub_content_add_action_btn(card_status, "ทดสอบการเชื่อมต่อ", "วัดความล่าช้าไปยังเซิร์ฟเวอร์กลาง", "\uf7c0", "เริ่มทดสอบ", "ยังไม่ได้ทดสอบ", &ping_result_lbl, NULL, NULL);
+
+    // ── การ์ดที่ 2: Wi-Fi ──[cite: 15]
+    vd_menu_sub_frame_t *card_wifi = vd_menu_sub_frame_create(content, "Wi-Fi");
+
+    // แถวเปิด/ปิด Wi-Fi[cite: 15]
+    vd_menu_sub_content_add_switch(card_wifi, "เปิดใช้งาน Wi-Fi", "ปิดเพื่อประหยัดพลังงานเมื่อใช้สาย LAN เพียงอย่างเดียว", true, NULL, NULL);
+
+    // คอนเทนเนอร์รายการ Wi-Fi List[cite: 15]
+    lv_obj_t *card_obj = vd_menu_sub_frame_get_card(card_wifi);
+    lv_obj_t *wifi_list = lv_obj_create(card_obj);
+    lv_obj_remove_style_all(wifi_list);
+    lv_obj_set_width(wifi_list, lv_pct(100));
+    lv_obj_set_height(wifi_list, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(wifi_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(wifi_list, 8, 0);
+    lv_obj_set_style_margin_top(wifi_list, 8, 0);
+
+    /* ── กลุ่มที่ 1: เครือข่ายที่เชื่อมต่ออยู่ปัจจุบัน (Connected Section) ── */
+    vd_menu_wifi_list_add_item(wifi_list, "Vending-Office-5G", true, true, 4, NULL, NULL);
+
+    /* ── เส้นแบ่งกลุ่ม 2px ── */
+    vd_menu_wifi_list_add_section_divider(wifi_list);
+
+    /* ── กลุ่มที่ 2: เครือข่ายพร้อมใช้งาน (Available Networks) ── */
+    vd_menu_wifi_list_add_item(wifi_list, "TrueGigate_Cafe", true,  false, 3, NULL, (void *)"TrueGigate_Cafe");
+    vd_menu_wifi_list_add_item(wifi_list, "AIS_smartwifi",   true,  false, 3, NULL, (void *)"AIS_smartwifi");
+    vd_menu_wifi_list_add_item(wifi_list, "HOME-NET-2.4G",   true,  false, 2, NULL, (void *)"HOME-NET-2.4G");
+    vd_menu_wifi_list_add_item(wifi_list, "TP-LINK_5C2A",    true,  false, 2, NULL, (void *)"TP-LINK_5C2A");
+    vd_menu_wifi_list_add_item(wifi_list, "FreeAirportWiFi", false, false, 1, NULL, (void *)"FreeAirportWiFi");
+
+    // ── การ์ดที่ 3: สาย LAN (Ethernet) ──[cite: 15]
+    vd_menu_sub_frame_t *card_lan = vd_menu_sub_frame_create(content, "สาย LAN (Ethernet)");
+    const char *ip_modes[] = {"DHCP (อัตโนมัติ)", "กำหนดเอง"};
+    vd_menu_sub_content_add_button_group(card_lan, "การกำหนดหมายเลข IP", "DHCP รับ IP อัตโนมัติจากเราเตอร์", ip_modes, 2, 0, NULL, NULL);
+    vd_menu_sub_content_add_copyable_badge(card_lan, "ที่อยู่ MAC", "รหัสประจำการ์ดเครือข่ายของเครื่อง แก้ไขไม่ได้", "A4:CF:12:9B:E3:70", NULL, NULL);
+
+    // ── การ์ดที่ 4: การใช้งานข้อมูลและการแจ้งเตือน ──[cite: 15]
+    vd_menu_sub_frame_t *card_usage = vd_menu_sub_frame_create(content, "การใช้งานข้อมูลและการแจ้งเตือน");
+    vd_menu_sub_content_add_switch(card_usage, "แจ้งเตือนเมื่อเครื่องออฟไลน์", "ส่งการแจ้งเตือนไปยังผู้ดูแลเมื่อขาดการเชื่อมต่อเกิน 5 นาที", true, NULL, NULL);
+    vd_menu_sub_content_add_progress_bar(card_usage, "ข้อมูลที่ใช้ในเดือนนี้", "รอบนับวันที่ 1 ของทุกเดือน", 39, 100, "3.1 / 8.0 GB");
+    vd_menu_sub_content_add_action_btn(card_usage, "เซิร์ฟเวอร์กลาง (Vending Cloud)", "ซิงค์ล่าสุด: 2 นาทีที่แล้ว", "\uf021", "ซิงค์ตอนนี้", NULL, NULL, NULL, NULL);
+}
+
+static vd_slot_data_t s_demo_slots[] = {
+    // ------------------------------------------------------------------------------------------------------------------------------
+    // Row A: เครื่องดื่มกาแฟและชาโบราณ (Coffee & Traditional Tea)
+    // ------------------------------------------------------------------------------------------------------------------------------
+    { .code = "A1", .product = "ลาเต้เย็น",               .img = "",         .price = 35, .discount_on = false, .discount = 0, .stock = 8,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "A2", .product = "อเมริกาโน่เย็น",           .img = "",     .price = 30, .discount_on = false, .discount = 0, .stock = 6,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "A3", .product = "คาปูชิโน่เย็น",           .img = "/flash/img/cappuccino.png",    .price = 35, .discount_on = true,  .discount = 5, .stock = 4,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "A4", .product = "เอสเพรสโซ่ร้อน",          .img = "/flash/img/espresso_hot.png",  .price = 25, .discount_on = false, .discount = 0, .stock = 0,  .capacity = 8,  .low_threshold = 2, .disabled = false }, // หมด
+    { .code = "A5", .product = "ชาไทยเย็น",              .img = "/flash/img/thai_tea.png",      .price = 30, .discount_on = false, .discount = 0, .stock = 2,  .capacity = 8,  .low_threshold = 2, .disabled = false }, // ใกล้หมด
+    { .code = "A6", .product = "ชาเขียวนมเย็น",           .img = "/flash/img/green_tea.png",     .price = 35, .discount_on = false, .discount = 0, .stock = 7,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+
+    // ------------------------------------------------------------------------------------------------------------------------------
+    // Row B: ชาผลไม้ เครื่องดื่มโซดา และนม (Fruit Tea, Soda & Milk)
+    // ------------------------------------------------------------------------------------------------------------------------------
+    { .code = "B1", .product = "ชามะนาว",                .img = "/flash/img/lemon_tea.png",     .price = 25, .discount_on = false, .discount = 0, .stock = 5,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "B2", .product = "ชาดำเย็น",               .img = "/flash/img/black_tea.png",     .price = 20, .discount_on = false, .discount = 0, .stock = 8,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "B3", .product = "ชาพีชโซดา",              .img = "/flash/img/peach_soda.png",    .price = 30, .discount_on = true,  .discount = 5, .stock = 3,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "B4", .product = "นมชมพูเย็น",              .img = "/flash/img/pink_milk.png",     .price = 25, .discount_on = false, .discount = 0, .stock = 6,  .capacity = 8,  .low_threshold = 2, .disabled = false },
+    { .code = "B5", .product = "โกโก้เย็น",               .img = "/flash/img/cocoa.png",         .price = 35, .discount_on = false, .discount = 0, .stock = 1,  .capacity = 8,  .low_threshold = 2, .disabled = false }, // ใกล้หมด
+    { .code = "B6", .product = "มัทฉะลาเต้",             .img = "/flash/img/matcha.png",        .price = 40, .discount_on = false, .discount = 0, .stock = 0,  .capacity = 8,  .low_threshold = 2, .disabled = true  }, // ปิดใช้งาน
+
+    // ------------------------------------------------------------------------------------------------------------------------------
+    // Row C: น้ำอัดลม น้ำเปล่า และเกลือแร่ (Soft Drinks, Water & Sport Drinks)
+    // ------------------------------------------------------------------------------------------------------------------------------
+    { .code = "C1", .product = "น้ำเปล่า 600ml",          .img = "/flash/img/water_600.png",     .price = 10, .discount_on = false, .discount = 0, .stock = 10, .capacity = 10, .low_threshold = 3, .disabled = false },
+    { .code = "C2", .product = "โค้ก ออริจินัล 325ml",    .img = "/flash/img/coke_orig.png",     .price = 15, .discount_on = false, .discount = 0, .stock = 8,  .capacity = 10, .low_threshold = 3, .disabled = false },
+    { .code = "C3", .product = "โค้ก ไม่มีน้ำตาล 325ml",  .img = "/flash/img/coke_zero.png",     .price = 15, .discount_on = false, .discount = 0, .stock = 5,  .capacity = 10, .low_threshold = 3, .disabled = false },
+    { .code = "C4", .product = "สไปรท์ 325ml",           .img = "/flash/img/sprite.png",        .price = 15, .discount_on = false, .discount = 0, .stock = 7,  .capacity = 10, .low_threshold = 3, .disabled = false },
+    { .code = "C5", .product = "ชาเขียวรสน้ำผึ้งมะนาว",    .img = "/flash/img/oishi_lemon.png",   .price = 20, .discount_on = true,  .discount = 3, .stock = 4,  .capacity = 10, .low_threshold = 3, .disabled = false },
+    { .code = "C6", .product = "เครื่องดื่มเกลือแร่",        .img = "/flash/img/sponsor.png",       .price = 15, .discount_on = false, .discount = 0, .stock = 9,  .capacity = 10, .low_threshold = 3, .disabled = false },
+
+    // ------------------------------------------------------------------------------------------------------------------------------
+    // Row D: ขนมและของว่าง (Snacks & Crisps)
+    // ------------------------------------------------------------------------------------------------------------------------------
+    { .code = "D1", .product = "เลย์ รสมันฝรั่งแท้",       .img = "/flash/img/lays_classic.png",  .price = 20, .discount_on = false, .discount = 0, .stock = 5,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "D2", .product = "เลย์ รสโนริสาหร่าย",      .img = "/flash/img/lays_nori.png",     .price = 20, .discount_on = false, .discount = 0, .stock = 2,  .capacity = 6,  .low_threshold = 2, .disabled = false }, // ใกล้หมด
+    { .code = "D3", .product = "พริงเกิลส์ รสครีมชีส",     .img = "/flash/img/pringles_sour.png", .price = 35, .discount_on = true,  .discount = 5, .stock = 4,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "D4", .product = "เบนโตะ ปลาหมึกอบกรอบ",  .img = "/flash/img/bento_red.png",     .price = 20, .discount_on = false, .discount = 0, .stock = 0,  .capacity = 6,  .low_threshold = 2, .disabled = false }, // หมด
+    { .code = "D5", .product = "โก๋แก่ ถั่วลิสงอบเกลือ",    .img = "/flash/img/kohkae_salt.png",   .price = 15, .discount_on = false, .discount = 0, .stock = 6,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "D6", .product = "เถ้าแก่น้อย สาหร่ายทอด",    .img = "/flash/img/taokaenoi.png",     .price = 20, .discount_on = true,  .discount = 2, .stock = 3,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+
+    // ------------------------------------------------------------------------------------------------------------------------------
+    // Row E: ช็อกโกแลต บิสกิต และขนมปัง (Chocolates, Biscuits & Bakery)
+    // ------------------------------------------------------------------------------------------------------------------------------
+    { .code = "E1", .product = "ป๊อกกี้ ช็อกโกแลต",        .img = "/flash/img/pocky_choco.png",   .price = 20, .discount_on = false, .discount = 0, .stock = 4,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "E2", .product = "เพรทซ์ รสลาบ",            .img = "/flash/img/pretz_larb.png",    .price = 15, .discount_on = false, .discount = 0, .stock = 5,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "E3", .product = "คิทแคท เวเฟอร์ช็อกโกแลต", .img = "/flash/img/kitkat.png",        .price = 25, .discount_on = true,  .discount = 5, .stock = 3,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "E4", .product = "โอรีโอ คุกกี้ไส้ครีม",       .img = "/flash/img/oreo.png",          .price = 15, .discount_on = false, .discount = 0, .stock = 6,  .capacity = 6,  .low_threshold = 2, .disabled = false },
+    { .code = "E5", .product = "ยูโร่เค้ก รสคัสตาร์ด",      .img = "/flash/img/euro_custard.png",  .price = 12, .discount_on = false, .discount = 0, .stock = 1,  .capacity = 6,  .low_threshold = 2, .disabled = false }, // ใกล้หมด
+    { .code = "E6", .product = "ขนมปังไส้สังขยา",        .img = "/flash/img/bread_custard.png", .price = 15, .discount_on = false, .discount = 0, .stock = 0,  .capacity = 6,  .low_threshold = 2, .disabled = true  }, // ปิดใช้งาน
+};
+
+#define DEMO_SLOTS_COUNT (sizeof(s_demo_slots) / sizeof(s_demo_slots[0]))
+
+/* ── 1. ดักรับค่าเมื่อผู้ใช้กด "บันทึก" ── */
+static void app_slot_on_save(vd_slot_data_t *slot, void *user_data) {
+    printf("[App] บันทึกช่อง %s: ชื่อ=%s, ราคา=%u, สต็อก=%u, ปิดขาย=%d\n",
+           slot->code, slot->product, (unsigned)slot->price, slot->stock, slot->disabled);
+
+    // TODO: บันทึกข้อมูลลง NVS / Flash ของ ESP32 เพื่อให้ค่าไม่หายเมื่อดับไฟ
+    // nvs_set_blob(my_nvs_handle, slot->code, slot, sizeof(vd_slot_data_t));
+    // nvs_commit(my_nvs_handle);
+
+    // รีเฟรชผังช่องจำหน่ายบนหน้าจอให้เป็นปัจจุบัน
+    if (content) {
+        vd_menu_content_clear(content);
+        create_products_settings_page(content);
+    }
+}
+
+/* ── 2. ดักรับคำสั่งเมื่อผู้ใช้กดปุ่ม "ทดสอบ" มอเตอร์ ── */
+static void app_slot_on_motor_test(const char *slot_code, void *user_data) {
+    printf("[Hardware] สั่งหมุนมอเตอร์ช่อง: %s\n", slot_code);
+
+    // TODO: สั่งบอร์ดขับมอเตอร์ (เช่น ส่งคำสั่งผ่าน I2C/RS485 หรือยิง Pulse ขา GPIO)
+    // driver_motor_dispense_slot(slot_code);
+
+    // ตัวอย่างจำลอง: เมื่อมอเตอร์หมุนครบรอบ (หรือ Microswitch ตรวจจับสำเร็จ)
+    // ให้เรียกฟังก์ชันนี้เพื่อส่งข้อความกลับไปแจ้งบน UI:
+    bool motor_ok = true; // ตรวจสอบสถานะจริงจากเซนเซอร์ตรวจจับ
+    if (motor_ok) {
+        vd_slot_modal_set_motor_result(true, "หมุนปกติ ทดสอบสำเร็จ");
+    } else {
+        vd_slot_modal_set_motor_result(false, "เกิดข้อผิดพลาด มอเตอร์ติดขัด!");
+    }
+}
+
+static void app_slot_custom_image_loader(lv_obj_t *img_obj, const char *src_path, void *user_data) {
+    printf("[ImageLoader] กำลังโหลดภาพจากพาธ: %s\n", src_path);
+
+    // ตัวอย่างที่ 1: ตรวจสอบและแมปชื่อไฟล์เป็น Image Descriptor ในหน่วยความจำ[cite: 19]
+    if (strstr(src_path, "greentea")) {
+        extern const lv_image_dsc_t greentea;
+        lv_image_set_src(img_obj, &greentea);
+        return;
+    }
+
+    // ตัวอย่างที่ 2: ถ้าเป็นพาธบน SD Card หรือระบบไฟล์ของ ESP32[cite: 19]
+    // LVGL v9 รองรับการใส่ Path ได้โดยตรงหากเปิดใช้งานไดรเวอร์ FS
+    lv_image_set_src(img_obj, src_path);
+}
+
+/* ผูก Callback เข้ากับ Modal Structure */
+static const vd_slot_modal_cbs_t s_modal_callbacks = {
+    .on_save       = app_slot_on_save,
+    .on_motor_test = app_slot_on_motor_test,
+    .on_close      = NULL,
+    .on_set_image  = app_slot_custom_image_loader // ★ ส่งฟังก์ชันของคุณเข้าไปที่นี่
+};
+
+static void _on_slot_clicked(lv_event_t *e) {
+    vd_slot_data_t *slot = (vd_slot_data_t *)lv_event_get_user_data(e);
+    if (!slot) return;
+
+    // เปิดหน้าต่างพร้อมส่งโครงสร้าง Callback ทั้งชุดเข้าไป
+    vd_slot_edit_modal_open(slot, 2, &s_modal_callbacks, NULL);
+}
+
+void create_products_settings_page(vd_menu_content_t *content) {
+    vd_menu_content_add_title(content, "สินค้าและช่องจำหน่าย");
+
+    // ── ทดสอบเรียกใช้ฟังก์ชันปรับแต่งค่า ──
+    vd_slot_set_capacity(&s_demo_slots[0], 20);   // ปรับ A1 ให้จุได้ 20 ชิ้น
+    vd_slot_set_threshold(&s_demo_slots[0], 5);  // เตือนเหลือน้อยเมื่อ A1 <= 5 ชิ้น
+
+    vd_menu_sub_frame_t *card_grid = vd_menu_sub_frame_create(content, NULL);
+    lv_obj_t *card_obj = vd_menu_sub_frame_get_card(card_grid);
+
+    // Header Row
+    lv_obj_t *header_row = lv_obj_create(card_obj);
+    lv_obj_remove_style_all(header_row);
+    lv_obj_set_width(header_row, lv_pct(100));
+    lv_obj_set_height(header_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_bottom(header_row, 12, 0);
+    lv_obj_set_ext_draw_size(header_row, 15);
+    lv_obj_set_overflow_visible(header_row, true);
+
+    lv_obj_t *f_title = lv_label_create(header_row);
+    lv_label_set_text(f_title, "ผังช่องจำหน่าย");
+    lv_obj_set_style_text_font(f_title, &anuphan_bold_16, 0);
+    lv_obj_set_style_text_color(f_title, VD_MENU_COLOR_TITLE, 0);
+
+    vd_menu_slot_legend_create(header_row);
+
+    // ★ สร้างผังแบบกำหนดคอลัมน์ (เช่น เปลี่ยนเป็น 4 คอลัมน์ หรือ 6 คอลัมน์ได้อิสระ)
+    // ส่ง cols = 4, default_low_threshold = 2
+    vd_menu_slot_grid_create(card_obj, s_demo_slots, DEMO_SLOTS_COUNT, 4, 2, _on_slot_clicked, NULL);
+
+    // สรุปยอดสถานะรวม
+    //vd_menu_slot_stats_create(card_obj, s_demo_slots, DEMO_SLOTS_COUNT, 2);
+
+    // ── การ์ดที่ 2: การแจ้งเตือนสินค้า ──
+    vd_menu_sub_frame_t *card_alert = vd_menu_sub_frame_create(content, "การแจ้งเตือนสินค้า");
+    vd_menu_sub_content_add_switch(card_alert, "แจ้งเตือนสินค้าใกล้หมด",
+                                  "ส่งการแจ้งเตือนถึงผู้ดูแลผ่านเซิร์ฟเวอร์กลางเมื่อช่องใดเหลือสินค้าต่ำกว่าค่าที่กำหนด",
+                                  true, NULL, NULL);
+    vd_menu_sub_content_add_stepper(card_alert, "แจ้งเตือนเมื่อเหลือไม่เกิน",
+                                   "ช่องที่เหลือสินค้าไม่เกินจำนวนนี้จะถูกทำเครื่องหมาย \"เหลือน้อย\" ในผังด้านบน",
+                                   2, "ชิ้น", NULL, NULL);
+    vd_menu_sub_content_add_switch(card_alert, "แสดงป้าย \"ขายหมด\" บนจอฝั่งลูกค้า",
+                                  "วาดป้ายทับช่องที่สินค้าหมด เพื่อไม่ให้ลูกค้าพยายามเลือกซื้อ",
+                                  true, NULL, NULL);
+}
+
+/* ตัวอย่าง Mock Callback ดึงไดรฟ์ */
+static bool app_fs_get_drives(vd_drive_info_t **out_drives, uint32_t *out_count, void *user_data) {
+    uint32_t count = 3;
+    vd_drive_info_t *drives = (vd_drive_info_t *)calloc(count, sizeof(vd_drive_info_t));
+    if (!drives) return false;
+
+    drives[0].id = strdup("flash");
+    drives[0].name = strdup("หน่วยความจำภายใน");
+    drives[0].used_mb = 2450;
+    drives[0].total_mb = 16384;
+
+    drives[1].id = strdup("sd");
+    drives[1].name = strdup("การ์ด SD");
+    drives[1].used_mb = 2900;
+    drives[1].total_mb = 16384;
+
+    drives[2].id = strdup("usb");
+    drives[2].name = strdup("USB Drive");
+    drives[2].used_mb = 520;
+    drives[2].total_mb = 8192;
+
+    *out_drives = drives;
+    *out_count = count;
+    return true;
+}
+
+/* ตัวอย่าง Mock Callback ดึงรายการไฟล์ในโฟลเดอร์ */
+static bool app_fs_list_dir(const char *drive_id, const char *path, vd_file_item_t **out_items, uint32_t *out_count, void *user_data) {
+    printf("[FS] List dir on drive: %s, path: %s\n", drive_id, path);
+
+    // ตัวอย่าง: ถ้าอยู่ที่ Root "/" ให้คืนโฟลเดอร์หมวดหมู่
+    if (strcmp(path, "/") == 0) {
+        uint32_t count = 3;
+        vd_file_item_t *items = (vd_file_item_t *)calloc(count, sizeof(vd_file_item_t));
+        if (!items) return false;
+
+        items[0].name = strdup("สินค้า");
+        items[0].type = VD_FILE_TYPE_DIR;
+        items[0].size_kb = 4; // จำนวน 4 รายการ
+
+        items[1].name = strdup("วิดีโอโฆษณา");
+        items[1].type = VD_FILE_TYPE_DIR;
+        items[1].size_kb = 2;
+
+        items[2].name = strdup("config.json");
+        items[2].type = VD_FILE_TYPE_TXT;
+        items[2].size_kb = 12;
+
+        *out_items = items;
+        *out_count = count;
+        return true;
+    }
+    // ตัวอย่าง: ถ้าเข้ามาใน "/สินค้า"
+    else if (strcmp(path, "/สินค้า") == 0) {
+        uint32_t count = 2;
+        vd_file_item_t *items = (vd_file_item_t *)calloc(count, sizeof(vd_file_item_t));
+        if (!items) return false;
+
+        items[0].name = strdup("greentea.png");
+        items[0].type = VD_FILE_TYPE_IMG;
+        items[0].size_kb = 420;
+
+        items[1].name = strdup("latte.png");
+        items[1].type = VD_FILE_TYPE_IMG;
+        items[1].size_kb = 380;
+
+        *out_items = items;
+        *out_count = count;
+        return true;
+    }
+
+    // โฟลเดอร์อื่นว่างเปล่า
+    *out_items = NULL;
+    *out_count = 0;
+    return true;
+}
+
+/* Callback เมื่อคลิกไฟล์ */
+static void app_fs_on_file_click(const char *drive_id, const char *full_path, const vd_file_item_t *item, void *user_data) {
+    //printf("[FS] Clicked file: %s (Type: %d, Size: %u KB)\n", full_path, item->type, item->size_kb);
+}
+
+/* Callback เมื่อกดปุ่มสร้างโฟลเดอร์ใหม่ */
+static void app_fs_on_new_folder(const char *drive_id, const char *current_path, void *user_data) {
+    printf("[FS] Request new folder on drive: %s at %s\n", drive_id, current_path);
+}
+
+/* กำหนด ID ของการกระทำเมื่อกดค้าง */
+enum {
+    FILE_ACT_VIEW = 1,
+    FILE_ACT_COPY,
+    FILE_ACT_RENAME,
+    FILE_ACT_MOVE,
+    FILE_ACT_COPY_PATH,
+    FILE_ACT_DELETE
+};
+
+/* ★ ลงทะเบียนเมนูกดค้างแบบไดนามิก ไม่ Hardcode ใน Library */
+static const vd_file_action_t s_app_file_actions[] = {
+    { FILE_ACT_VIEW,      "\uf06e", "เปิดดู",           false }, //
+    { FILE_ACT_COPY,      "\uf0c5", "คัดลอก",           false }, //
+    { FILE_ACT_RENAME,    "\uf304", "เปลี่ยนชื่อ",         false }, //
+    { FILE_ACT_MOVE,      "\uf0ec", "ย้าย",             false }, //
+    { FILE_ACT_COPY_PATH, "\uf0c1", "คัดลอกที่อยู่ไฟล์",   false }, //
+    { FILE_ACT_DELETE,    "\uf2ed", "ลบ",               true  }  // สีแดง
+};
+
+/* Callback เมื่อผู้ใช้แตะเลือกคำสั่งใดคำสั่งหนึ่งในเมนูกดค้าง */
+static void app_on_action_click(uint32_t action_id, const char *drive_id, const char *full_path, const vd_file_item_t *item, void *user_data) {
+    printf("[FileAction] เลือก Action ID: %u | ไดรฟ์: %s | พาธ: %s | ไฟล์: %s\n",
+           (unsigned)action_id, drive_id, full_path, item->name);
+
+    switch (action_id) {
+        case FILE_ACT_VIEW:
+            // TODO: เปิด Dialog พรีวิวไฟล์ (รูปภาพ / ข้อความ)
+            break;
+        case FILE_ACT_DELETE:
+            // TODO: เปิด Confirm Box เพื่อยืนยันการลบไฟล์
+            break;
+        case FILE_ACT_COPY_PATH:
+            // TODO: คัดลอก full_path เข้า Clipboard
+            break;
+    }
+}
+
+/* เรียกเปิดหน้าเมื่อกด Sidebar */
+void create_file_setting_page(vd_menu_content_t *content) {
+  vd_file_browser_cbs_t fs_cbs = {
+        .get_drives      = app_fs_get_drives,
+        .list_dir        = app_fs_list_dir,
+        .on_file_click   = app_fs_on_file_click,
+        .on_new_folder   = app_fs_on_new_folder,
+
+        // ★ ผูกเมนูกดค้างที่ลงทะเบียนไว้
+        .actions         = s_app_file_actions,
+        .action_count    = sizeof(s_app_file_actions) / sizeof(s_app_file_actions[0]),
+        .on_action_click = app_on_action_click
+    };
+
+    vd_menu_page_files_create(content, &fs_cbs, NULL);
+}
+
+void sd_main(void *p){
+  //vd_task_mgr_register_task(xTaskGetCurrentTaskHandle());
+  //esp_err_t sd_err = vd_sd_mount();
+    //if(sd_err != ESP_OK) {
+    //  ESP_LOGE(TAG, "SD Error!");
+    //  __sd_ok = false;
+    //}
+
+    //if(__sd_ok){
+      //vd_sd_scan_dir("0:/prod_img", ".jpg", img_cb, NULL);
+      //__read_all_prod_img_ok = true;
+      //vd_sd_unmount();
+
+      // 1. เริ่มระบบเสียงฮาร์ดแวร์ ES8311 + I2S + PA Amp
+       // init_audio_hardware();
+
+       // vTaskDelay(pdMS_TO_TICKS(50));
+
+        // 1. สร้าง RingBuffer ขนาด 64 KB แบบ NOSPLIT (ตรงกับขนาดที่ส่งเข้า)
+    //if (!s_audio_ringbuf) s_audio_ringbuf = xRingbufferCreate(64 * 1024, RINGBUF_TYPE_NOSPLIT);
+
+    // 2. สตาร์ต Task ที่ Priority 5 (Core 0)
+    //if (!s_audio_task_hdl) xTaskCreatePinnedToCore(audio_player_task, "avi_audio", 8192, NULL, 5, &s_audio_task_hdl, 0);
+
+    //xTaskCreatePinnedToCore(coin_reader_task, "coin_task", 4096, NULL, 5, NULL, 1);
+
+    vd_task_mgr_register_task(xTaskGetCurrentTaskHandle());
+    
+      
+    if (lvgl_port_lock(1000)) {
+      vd_task_manager_create(lv_layer_top());
+      int32_t disp_width = lv_display_get_horizontal_resolution(display);
+  int32_t disp_height = lv_display_get_vertical_resolution(display);
+
+  tile_view = lv_tileview_create(lv_screen_active());
+    sale_page = lv_tileview_add_tile(tile_view, 0, 0, LV_DIR_HOR);
+    lv_obj_set_style_pad_left(sale_page, 0, 0);
+
+    menu_page = lv_tileview_add_tile(tile_view, 1, 0, LV_DIR_ALL);
+  lv_obj_set_size(menu_page, disp_width, disp_height);
+  lv_obj_set_style_pad_left(menu_page, 0, 0);
+  lv_obj_set_style_bg_opa(menu_page, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(menu_page, lv_color_white(), 0);
+
+  apply_thai_font_hook((lv_font_t *)&anuphan_12);
+  apply_thai_font_hook((lv_font_t *)&anuphan_14);
+  apply_thai_font_hook((lv_font_t *)&anuphan_med_14);
+  apply_thai_font_hook((lv_font_t *)&anuphan_16);
+  apply_thai_font_hook((lv_font_t *)&anuphan_med_16);
+  apply_thai_font_hook((lv_font_t *)&anuphan_semi_bold_16);
+  apply_thai_font_hook((lv_font_t *)&anuphan_bold_16);
+  apply_thai_font_hook((lv_font_t *)&anuphan_18);
+  apply_thai_font_hook((lv_font_t *)&anuphan_med_18);
+  apply_thai_font_hook((lv_font_t *)&anuphan_semi_bold_18);
+  apply_thai_font_hook((lv_font_t *)&anuphan_med_22);
+  apply_thai_font_hook((lv_font_t *)&anuphan_bold_18);
+  apply_thai_font_hook((lv_font_t *)&anuphan_bold_20);
+  apply_thai_font_hook((lv_font_t *)&anuphan_22);
+  apply_thai_font_hook((lv_font_t *)&anuphan_bold_22);
+  apply_thai_font_hook((lv_font_t *)&anuphan_bold_24);
+  apply_thai_font_hook((lv_font_t *)&anuphan_bold_26);
+
+  lv_obj_set_flex_flow(menu_page, LV_FLEX_FLOW_ROW);
+
+    // 2. สร้าง Sidebar ฝั่งซ้าย
+    vd_menu_sidebar_t *sidebar = vd_menu_sidebar_list_create(menu_page, -1, disp_height, _on_sidebar_menu_click, NULL);
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_GENERAL,     "\uf013", "ตั้งค่าทั่วไป", true);
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_ADS_MGR,     "\uf03d", "จัดการโฆษณา", false);
+
+    vd_menu_sidebar_list_add_divider(sidebar);
+
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_PRODUCT_MGR, "\uf468", "สินค้าและช่องจำหน่าย", false); // เมนูเริ่มต้น
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_PAYMENT,     "\uf09d", "ระบบชำระเงิน", false);
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_TRANSACTIONS,"\uf543", "รายการรับ-จ่าย", false);
+
+    vd_menu_sidebar_list_add_divider(sidebar);
+
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_NETWORK,     "\uf1eb", "เครือข่าย", false);
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_DEV_TEST,    "\uf7d9", "ทดสอบอุปกรณ์", false);
+    vd_menu_sidebar_list_add_item(sidebar, MENU_ID_FILE_MGR,    "\uf07c", "เรียกดูไฟล์", false);
+
+    // ปุ่มออกจากหน้าตั้งค่าที่ตรึงไว้ด้านล่างสุด
+    vd_menu_sidebar_list_set_exit_btn(sidebar, "\uf2f5", "ออกจากหน้าตั้งค่า");
+
+    // 3. สร้าง Main Content Area ฝั่งขวา (กรอบเส้นประสีแดง)
+    content = vd_menu_content_create(menu_page);
+
+    create_settings_page_view(content);
+
+ //   create_simple_coin_counter_ui(lv_screen_active());
+
+     // create_simple_promptpay_ui(lv_screen_active());
+      //create_simple_order_checker_ui(lv_screen_active());
+            // 1. สร้าง Widget วิดีโอบนหน้าจอ (วางไว้กึ่งกลางจอ)
+            /*avi_video = vd_avi_create(lv_screen_active());
+            lv_obj_center(avi_video);
+
+            // 2. กำหนดไฟล์วิดีโอจาก SD Card
+            vd_avi_set_src(avi_video, "0:/output.avi");
+
+            vd_avi_set_audio_cb(avi_video, on_avi_audio_chunk, NULL);
+
+            // 3. เริ่มเล่น
+            vd_avi_play(avi_video);
+
+            // 4. สร้างแผงควบคุม (Play/Pause, Slider, Time) ซ้อนไว้บนเลเยอร์หน้าจอ
+            create_video_controls(lv_screen_active(), avi_video);*/
+
+            lvgl_port_unlock();
+        }
+
+        //http_req_t *http = http_open("https://a.moneyspace.net/payment/available-channels", HTTP_METHOD_POST);
+        //http_set_header(http, "Content-Type", "application/json");
+        //http_set_body(http, "{\"secret_id\": \"V5N0B0QSG31Z14S2FE62\",\"secret_key\": \"3e68yE1E15zS33m1nyHPznh70e7vFq0yY853D0aGYbLJdMjup5GijQbQ5ZD9J0TJkVOIV9L40uW3XYiq\"}");
+        //http_set_resp_opt(http, false, true);
+
+        //ESP_LOGI(TAG, "-> %s", http_send(http));
+
+        //http_close(http);
+     // }
+
+  while(1){
+   vTaskDelay(pdMS_TO_TICKS(100)); 
+  }
+}
+
+/*!< endpoint address */
+#define HID_INT_EP          0x81
+#define HID_INT_EP_SIZE     4
+#define HID_INT_EP_INTERVAL 1
+
+#define USBD_VID           0xffff
+#define USBD_PID           0xffff
+#define USBD_MAX_POWER     100
+#define USBD_LANGID_STRING 1033
+
+/*!< config descriptor size */
+#define USB_CONFIG_SIZE 34
+/*!< report descriptor size */
+#define HID_MOUSE_REPORT_DESC_SIZE 74
+
+static const uint8_t device_descriptor[] = {
+    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0x00, 0x00, 0x00, USBD_VID, USBD_PID, 0x0002, 0x01)
+};
+
+static const uint8_t config_descriptor[] = {
+    USB_CONFIG_DESCRIPTOR_INIT(USB_CONFIG_SIZE, 0x01, 0x01, USB_CONFIG_BUS_POWERED, USBD_MAX_POWER),
+    HID_MOUSE_DESCRIPTOR_INIT(0x00, 0x01, HID_MOUSE_REPORT_DESC_SIZE, HID_INT_EP, HID_INT_EP_SIZE, HID_INT_EP_INTERVAL),
+};
+
+static const uint8_t device_quality_descriptor[] = {
+    ///////////////////////////////////////
+    /// device qualifier descriptor
+    ///////////////////////////////////////
+    0x0a,
+    USB_DESCRIPTOR_TYPE_DEVICE_QUALIFIER,
+    0x00,
+    0x02,
+    0x00,
+    0x00,
+    0x00,
+    0x40,
+    0x00,
+    0x00,
+};
+
+static const char *string_descriptors[] = {
+    (const char[]){ 0x09, 0x04 }, /* Langid */
+    "CherryUSB",                  /* Manufacturer */
+    "CherryUSB HID DEMO",         /* Product */
+    "2022123456",                 /* Serial Number */
+};
+
+static const uint8_t *device_descriptor_callback(uint8_t speed)
+{
+    return device_descriptor;
+}
+
+static const uint8_t *config_descriptor_callback(uint8_t speed)
+{
+    return config_descriptor;
+}
+
+static const uint8_t *device_quality_descriptor_callback(uint8_t speed)
+{
+    return device_quality_descriptor;
+}
+
+static const char *string_descriptor_callback(uint8_t speed, uint8_t index)
+{
+    if (index >= (sizeof(string_descriptors) / sizeof(char *))) {
+        return NULL;
+    }
+    return string_descriptors[index];
+}
+
+const struct usb_descriptor hid_descriptor = {
+    .device_descriptor_callback = device_descriptor_callback,
+    .config_descriptor_callback = config_descriptor_callback,
+    .device_quality_descriptor_callback = device_quality_descriptor_callback,
+    .string_descriptor_callback = string_descriptor_callback
+};
+
+/*!< hid mouse report descriptor */
+static const uint8_t hid_mouse_report_desc[HID_MOUSE_REPORT_DESC_SIZE] = {
+    0x05, 0x01, // USAGE_PAGE (Generic Desktop)
+    0x09, 0x02, // USAGE (Mouse)
+    0xA1, 0x01, // COLLECTION (Application)
+    0x09, 0x01, // USAGE (Pointer)
+    0xA1, 0x00, // COLLECTION (Physical)
+    0x05, 0x09, // USAGE_PAGE (Button)
+    0x19, 0x01, // USAGE_MINIMUM (Button 1)
+    0x29, 0x03, // USAGE_MAXIMUM (Button 3)
+    0x15, 0x00, // LOGICAL_MINIMUM (0)
+    0x25, 0x01, // LOGICAL_MAXIMUM (1)
+    0x95, 0x03, // REPORT_COUNT (3)
+    0x75, 0x01, // REPORT_SIZE (1)
+    0x81, 0x02, // INPUT (Data,Var,Abs)
+    0x95, 0x01, // REPORT_COUNT (1)
+    0x75, 0x05, // REPORT_SIZE (5)
+    0x81, 0x01, // INPUT (Cnst,Var,Abs)
+    0x05, 0x01, // USAGE_PAGE (Generic Desktop)
+    0x09, 0x30, // USAGE (X)
+    0x09, 0x31, // USAGE (Y)
+    0x09, 0x38, // Usage (Wheel)
+    0x15, 0x81, // LOGICAL_MINIMUM (-127)
+    0x25, 0x7F, // LOGICAL_MAXIMUM (127)
+    0x75, 0x08, // REPORT_SIZE (8)
+    0x95, 0x03, // REPORT_COUNT (2)
+    0x81, 0x06, // INPUT (Data,Var,Rel)
+    0xC0,       // END_COLLECTION
+    0x09, 0x3c, // USAGE (Motion Wakeup)
+    0x05, 0xff, // USAGE_PAGE (Vendor Defined 0xFF)
+    0x09, 0x01, // USAGE (Vendor Usage 1)
+    0x15, 0x00, // LOGICAL_MINIMUM (0)
+    0x25, 0x01, // LOGICAL_MAXIMUM (1)
+    0x75, 0x01, // REPORT_SIZE (1)
+    0x95, 0x02, // REPORT_COUNT (2)
+    0xb1, 0x22, // FEATURE (Data,Var,Abs,NPrf)
+    0x75, 0x06, // REPORT_SIZE (6)
+    0x95, 0x01, // REPORT_COUNT (1)
+    0xb1, 0x01, // FEATURE (Cnst,Ary,Abs)
+    0xc0        // END_COLLECTION
+};
+
+/*!< mouse report struct */
+struct hid_mouse {
+    uint8_t buttons;
+    int8_t x;
+    int8_t y;
+    int8_t wheel;
+};
+
+/*!< mouse report */
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX struct hid_mouse mouse_cfg;
+
+#define HID_STATE_IDLE 0
+#define HID_STATE_BUSY 1
+
+/*!< hid state ! Data can be sent only when state is idle  */
+static volatile uint8_t hid_state = HID_STATE_IDLE;
+
+static uint8_t _busid, _event, _usb_cb = false;
+
+static void usbd_event_handler(uint8_t busid, uint8_t event)
+{
+  _busid = busid;
+  _event = event;
+  _usb_cb = true;
+}
+
+static volatile bool ep_tx_busy = false;
+
+static void __my_usbd_event_handler(uint8_t busid, uint8_t event)
+{
+  _usb_cb = false;
+    switch (event) {
+        case USBD_EVENT_RESET:
+          ESP_LOGI(TAG, "USB RESET");
+            break;
+        case USBD_EVENT_CONNECTED:
+          ESP_LOGI(TAG, "USB CONNECTED");
+            break;
+        case USBD_EVENT_DISCONNECTED:
+          ESP_LOGI(TAG, "USB DISCONNECTED");
+            break;
+        case USBD_EVENT_RESUME:
+          ESP_LOGI(TAG, "USB RESUME");
+            break;
+        case USBD_EVENT_SUSPEND:  
+          ESP_LOGI(TAG, "USB SUSPEND");
+            break;
+        case USBD_EVENT_CONFIGURED:
+            hid_state = HID_STATE_IDLE;
+            ep_tx_busy = false;
+            ESP_LOGI(TAG, "USB CONFIGURED");
+            break;
+        case USBD_EVENT_SET_REMOTE_WAKEUP:
+          ESP_LOGI(TAG, "USB SET_REMOTE_WAKEUP");
+            break;
+        case USBD_EVENT_CLR_REMOTE_WAKEUP:
+          ESP_LOGI(TAG, "USB CLR_REMOTE_WAKEUP");
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* function ------------------------------------------------------------------*/
+static void usbd_hid_int_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
+{
+    hid_state = HID_STATE_IDLE;
+    ep_tx_busy = false;
+}
+
+/*!< endpoint call back */
+static struct usbd_endpoint hid_in_ep = {
+    .ep_cb = usbd_hid_int_callback,
+    .ep_addr = HID_INT_EP
+};
+
+struct usbd_interface intf0;
+
+void hid_mouse_init(uint8_t busid, uintptr_t reg_base)
+{
+    usbd_desc_register(busid, &hid_descriptor);
+
+    usbd_add_interface(busid, usbd_hid_init_intf(busid, &intf0, hid_mouse_report_desc, HID_MOUSE_REPORT_DESC_SIZE));
+    usbd_add_endpoint(busid, &hid_in_ep);
+
+    usbd_initialize(busid, reg_base, usbd_event_handler);
+
+    /*!< init mouse report data */
+    mouse_cfg.buttons = 0;
+    mouse_cfg.wheel = 0;
+    mouse_cfg.x = 0;
+    mouse_cfg.y = 0;
+}
+
+void send_mouse_report(uint8_t buttons, int8_t x, int8_t y, int8_t wheel) {
+    if (ep_tx_busy) return;
+
+    // ใช้ mouse_cfg ที่มี Macro USB_MEM_ALIGNX ป้องกันปัญหา Cache และ DMA Alignment
+    mouse_cfg.buttons = buttons;
+    mouse_cfg.x = x;
+    mouse_cfg.y = y;
+    mouse_cfg.wheel = wheel;
+
+    ep_tx_busy = true;
+    usbd_ep_start_write(0, HID_INT_EP, (uint8_t *)&mouse_cfg, sizeof(mouse_cfg));
+}
+
+#include "diskio.h"
+#include "usbh_core.h"
+#include "usbh_msc.h"
+
+static const char *TAG_USB = "USB_INFO";
+
+static FATFS s_usb_fatfs;
+
+void print_usb_drive_details(struct usbh_msc *msc_class, const char *drive_path);
+
+static DSTATUS usb_init_cb(void *ctx) { return 0; }
+static DSTATUS usb_status_cb(void *ctx) { return (ctx == NULL) ? STA_NOINIT : 0; }
+
+#include "esp_memory_utils.h"
+
+struct usb_drive_entry {
+    FATFS fs;
+    BYTE pdrv;
+    struct usbh_msc *msc;
+};
+
+static struct usb_drive_entry s_usb_drives[2];
+
+#define USB_DMA_ALIGN_SIZE 64
+#define BOUNCE_BUF_SIZE    (16 * 1024) // 16 KB
+
+// บัฟเฟอร์ 16 KB ใน Non-cache SRAM จัด Alignment 64 ไบต์
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t s_dma_bounce_buf[BOUNCE_BUF_SIZE];
+
+static DRESULT usb_read_cb(void *ctx, BYTE *buff, LBA_t sector, UINT count) {
+    struct usbh_msc *msc = (struct usbh_msc *)ctx;
+    if (!msc && s_usb_drives[0].msc) msc = s_usb_drives[0].msc;
+    if (!msc) return RES_NOTRDY;
+
+    uint32_t blk_size = msc->blocksize ? msc->blocksize : 512;
+
+    // กรณีที่ 1: บัฟเฟอร์ต้องหาร 64 ลงตัว และอยู่ใน Internal DMA RAM เท่านั้น ถึงจะยิงรวดเดียว
+    if (((uintptr_t)buff % USB_DMA_ALIGN_SIZE == 0) && esp_ptr_dma_capable(buff)) {
+        int ret = usbh_msc_scsi_read10(msc, (uint32_t)sector, buff, count);
+        return (ret == 0) ? RES_OK : RES_ERROR;
+    }
+
+    // กรณีที่ 2: บัฟเฟอร์ไม่ Align 64 (เช่น fs->win ของ FatFS) ให้ก๊อปปี้ผ่าน Bounce Buffer
+    UINT sectors_left = count;
+    LBA_t cur_sector = sector;
+    BYTE *cur_buff = buff;
+    UINT max_sectors = sizeof(s_dma_bounce_buf) / blk_size;
+
+    while (sectors_left > 0) {
+        UINT chunk = (sectors_left > max_sectors) ? max_sectors : sectors_left;
+        int ret = usbh_msc_scsi_read10(msc, (uint32_t)cur_sector, s_dma_bounce_buf, chunk);
+        if (ret != 0) {
+            ESP_LOGE(TAG_USB, "SCSI Read10 failed at LBA: %lu", (unsigned long)cur_sector);
+            return RES_ERROR;
+        }
+        memcpy(cur_buff, s_dma_bounce_buf, chunk * blk_size);
+
+        cur_sector += chunk;
+        cur_buff += (chunk * blk_size);
+        sectors_left -= chunk;
+    }
+
+    return RES_OK;
+}
+
+static uint32_t s_wr_calls, s_wr_sectors, s_wr_bounce, s_rd_calls, s_rd_sectors, s_rd_bounce;
+static uint64_t s_wr_us, s_rd_us;
+static uint32_t s_hist[8];   /* count: 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64-127, 128+ */
+
+static DRESULT usb_write_cb(void *ctx, const BYTE *buff, LBA_t sector, UINT count) {
+  /* ในต้น usb_write_cb */
+int64_t t0 = esp_timer_get_time();
+s_wr_calls++; s_wr_sectors += count;
+int b = 31 - __builtin_clz(count | 1); if (b > 7) b = 7; s_hist[b]++;
+/* ... ก่อน return ทุกทาง */
+s_wr_us += esp_timer_get_time() - t0;
+
+    struct usbh_msc *msc = (struct usbh_msc *)ctx;
+    if (!msc && s_usb_drives[0].msc) msc = s_usb_drives[0].msc;
+    if (!msc) return RES_NOTRDY;
+
+    uint32_t blk_size = msc->blocksize ? msc->blocksize : 512;
+
+    // กรณีที่ 1: บัฟเฟอร์ต้องหาร 64 ลงตัว และอยู่ใน Internal DMA RAM เท่านั้น ถึงจะยิงรวดเดียว
+    if (((uintptr_t)buff % USB_DMA_ALIGN_SIZE == 0) && esp_ptr_dma_capable(buff)) {
+        int ret = usbh_msc_scsi_write10(msc, (uint32_t)sector, buff, count);
+        return (ret == 0) ? RES_OK : RES_ERROR;
+    }
+
+    // กรณีที่ 2: บัฟเฟอร์ไม่ Align 64 ให้ก๊อปปี้ผ่าน Bounce Buffer
+    UINT sectors_left = count;
+    LBA_t cur_sector = sector;
+    const BYTE *cur_buff = buff;
+    UINT max_sectors = sizeof(s_dma_bounce_buf) / blk_size;
+
+    while (sectors_left > 0) {
+        UINT chunk = (sectors_left > max_sectors) ? max_sectors : sectors_left;
+        memcpy(s_dma_bounce_buf, cur_buff, chunk * blk_size);
+        int ret = usbh_msc_scsi_write10(msc, (uint32_t)cur_sector, s_dma_bounce_buf, chunk);
+        if (ret != 0) {
+            ESP_LOGE(TAG_USB, "SCSI Write10 failed at LBA: %lu", (unsigned long)cur_sector);
+            return RES_ERROR;
+        }
+
+        cur_sector += chunk;
+        cur_buff += (chunk * blk_size);
+        sectors_left -= chunk;
+    }
+
+    return RES_OK;
+}
+
+static DRESULT usb_ioctl_cb(void *ctx, BYTE cmd, void *buff) {
+    struct usbh_msc *msc = (struct usbh_msc *)ctx;
+    if (!msc) return RES_NOTRDY;
+
+    switch (cmd) {
+        case CTRL_SYNC: 
+            return RES_OK;
+        case GET_SECTOR_COUNT: 
+            *(LBA_t *)buff = (LBA_t)msc->blocknum; 
+            return RES_OK;
+        case GET_SECTOR_SIZE: 
+            *(WORD *)buff = (WORD)(msc->blocksize ? msc->blocksize : 512); 
+            return RES_OK;
+        case GET_BLOCK_SIZE: 
+            *(DWORD *)buff = 1; 
+            return RES_OK;
+        default: 
+            return RES_PARERR;
+    }
+}
+
+static const diskio_ops_t s_usb_ops = {
+    .init = usb_init_cb,
+    .status = usb_status_cb,
+    .read = usb_read_cb,
+    .write = usb_write_cb,
+    .ioctl = usb_ioctl_cb,
+};
+
+static const char *TAG_BENCH = "USB_BENCH";
+
+/**
+ * @brief ฟังก์ชันทดสอบความเร็วการอ่าน-เขียน USB Drive ผ่าน FatFS
+ * @param drive_path ไดรฟ์ที่ต้องการทดสอบ เช่น "0:" หรือ "1:"
+ * @param total_size_mb ขนาดไฟล์รวมที่ใช้ทดสอบ (MB) แนะนำ 8 - 16 MB
+ * @param chunk_size_kb ขนาดบัฟเฟอร์ต่อรอบการเขียน (KB) แนะนำ 32 หรือ 64 KB
+ */
+void usb_storage_benchmark(const char *drive_path, uint32_t total_size_mb, uint32_t chunk_size_kb) {
+    char file_path[32];
+    snprintf(file_path, sizeof(file_path), "%s/bench_test.tmp", drive_path);
+
+    size_t chunk_bytes = chunk_size_kb * 1024;
+    size_t total_bytes = total_size_mb * 1024 * 1024;
+    uint32_t total_chunks = total_bytes / chunk_bytes;
+
+    ESP_LOGI(TAG_BENCH, "==================================================");
+    ESP_LOGI(TAG_BENCH, "Starting USB Storage Benchmark on [%s]", file_path);
+    ESP_LOGI(TAG_BENCH, "Total Size: %lu MB | Chunk Size: %lu KB (%lu Blocks)", 
+             (unsigned long)total_size_mb, (unsigned long)chunk_size_kb, (unsigned long)total_chunks);
+    ESP_LOGI(TAG_BENCH, "==================================================");
+
+    // จองบัฟเฟอร์ใน Internal SRAM ที่รองรับ DMA และ Align 4 ไบต์
+    uint8_t *buf = (uint8_t *)heap_caps_aligned_alloc(64, chunk_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!buf) {
+        ESP_LOGE(TAG_BENCH, "Cannot allocate %lu KB DMA buffer!", (unsigned long)chunk_size_kb);
+        return;
+    }
+
+    // เติมข้อมูล Pattern ลงบัฟเฟอร์เพื่อกันการบีบอัดข้อมูลหลอก
+    for (size_t i = 0; i < chunk_bytes; i++) {
+        buf[i] = (uint8_t)(i & 0xFF);
+    }
+
+    FIL file;
+    FRESULT fr;
+    UINT bw = 0, br = 0;
+
+    /* -----------------------------------------------------------
+     * 1. ทดสอบการเขียน (Write Benchmark)
+     * ----------------------------------------------------------- */
+    ESP_LOGI(TAG_BENCH, "Running Write Test...");
+    fr = f_open(&file, file_path, FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr != FR_OK) {
+        ESP_LOGE(TAG_BENCH, "f_open for write failed (Error: %d)", fr);
+        free(buf);
+        return;
+    }
+
+    int64_t t_write_start = esp_timer_get_time();
+
+    for (uint32_t i = 0; i < total_chunks; i++) {
+        fr = f_write(&file, buf, chunk_bytes, &bw);
+        if (fr != FR_OK || bw != chunk_bytes) {
+            ESP_LOGE(TAG_BENCH, "Write failed at chunk %lu (Error: %d, written: %u)", (unsigned long)i, fr, bw);
+            f_close(&file);
+            free(buf);
+            return;
+        }
+    }
+
+    // ต้องรวมจังหวะ flush ข้อมูลและปิดไฟล์เข้าไปด้วย เพื่อให้ได้เวลาที่เขียนลง NAND Flash จริง
+    f_close(&file);
+    int64_t t_write_end = esp_timer_get_time();
+
+    double write_time_sec = (double)(t_write_end - t_write_start) / 1000000.0;
+    double write_speed_mbs = ((double)total_bytes / (1024.0 * 1024.0)) / write_time_sec;
+
+    ESP_LOGI(TAG_BENCH, ">> Write Finished: %lu MB in %.3f sec", (unsigned long)total_size_mb, write_time_sec);
+    ESP_LOGI(TAG_BENCH, ">> Write Speed   : %.2f MB/s", write_speed_mbs);
+
+    /* -----------------------------------------------------------
+     * 2. ทดสอบการอ่าน (Read Benchmark)
+     * ----------------------------------------------------------- */
+    ESP_LOGI(TAG_BENCH, "Running Read Test...");
+    fr = f_open(&file, file_path, FA_READ);
+    if (fr != FR_OK) {
+        ESP_LOGE(TAG_BENCH, "f_open for read failed (Error: %d)", fr);
+        free(buf);
+        return;
+    }
+
+    int64_t t_read_start = esp_timer_get_time();
+
+    for (uint32_t i = 0; i < total_chunks; i++) {
+        fr = f_read(&file, buf, chunk_bytes, &br);
+        if (fr != FR_OK || br != chunk_bytes) {
+            ESP_LOGE(TAG_BENCH, "Read failed at chunk %lu (Error: %d, read: %u)", (unsigned long)i, fr, br);
+            f_close(&file);
+            free(buf);
+            return;
+        }
+    }
+
+    f_close(&file);
+    int64_t t_read_end = esp_timer_get_time();
+
+    double read_time_sec = (double)(t_read_end - t_read_start) / 1000000.0;
+    double read_speed_mbs = ((double)total_bytes / (1024.0 * 1024.0)) / read_time_sec;
+
+    ESP_LOGI(TAG_BENCH, ">> Read Finished : %lu MB in %.3f sec", (unsigned long)total_size_mb, read_time_sec);
+    ESP_LOGI(TAG_BENCH, ">> Read Speed    : %.2f MB/s", read_speed_mbs);
+
+    /* -----------------------------------------------------------
+     * 3. ล้างไฟล์ทดสอบทิ้ง (Cleanup)
+     * ----------------------------------------------------------- */
+    f_unlink(file_path);
+    free(buf);
+
+    ESP_LOGI(TAG_BENCH, "==================================================");
+    ESP_LOGI(TAG_BENCH, "Benchmark Completed Successfully");
+    ESP_LOGI(TAG_BENCH, "==================================================");
+
+    ESP_LOGI(TAG_BENCH, "WR calls=%lu sectors=%lu avg=%.1f sec/call bounce=%lu time=%.2fs",
+         s_wr_calls, s_wr_sectors, (double)s_wr_sectors/s_wr_calls, s_wr_bounce, s_wr_us/1e6);
+ESP_LOGI(TAG_BENCH, "hist 1:%lu 2:%lu 4:%lu 8:%lu 16:%lu 32:%lu 64:%lu 128+:%lu",
+         s_hist[0],s_hist[1],s_hist[2],s_hist[3],s_hist[4],s_hist[5],s_hist[6],s_hist[7]);
+}
+
+void usbh_msc_run(struct usbh_msc *msc_class) {
+    if (!msc_class) return;
+
+    // 1. เรียกใช้ API ตัวจริงของ CherryUSB เพื่อเริ่มระบบ SCSI และดึงขนาดความจุ
+    int ret = usbh_msc_scsi_init(msc_class);
+    if (ret != 0) {
+        ESP_LOGE(TAG_USB, "usbh_msc_scsi_init failed (ret=%d)", ret);
+        return;
+    }
+
+    ESP_LOGI(TAG_USB, "SCSI Ready: Total Blocks = %lu, Sector Size = %u Bytes",
+             (unsigned long)msc_class->blocknum, msc_class->blocksize);
+
+    // 2. หา Slot ว่าง
+    int slot_idx = -1;
+    for (int i = 0; i < 2; i++) {
+        if (s_usb_drives[i].msc == NULL) {
+            slot_idx = i;
+            break;
+        }
+    }
+
+    if (slot_idx < 0) {
+        ESP_LOGE(TAG_USB, "No free drive slot available!");
+        return;
+    }
+
+    // 3. ลงทะเบียนเข้า diskio
+    BYTE pdrv = 0;
+    if (diskio_register_driver(&s_usb_ops, msc_class, &pdrv) != RES_OK) {
+        ESP_LOGE(TAG_USB, "Disk slot full! Cannot register USB Drive");
+        return;
+    }
+
+    s_usb_drives[slot_idx].msc  = msc_class;
+    s_usb_drives[slot_idx].pdrv = pdrv;
+
+    char drive_path[8];
+    snprintf(drive_path, sizeof(drive_path), "%u:", pdrv);
+
+    // 4. สั่ง Mount เข้า FatFS
+    FRESULT fr = f_mount(&s_usb_drives[slot_idx].fs, drive_path, 1);
+    if (fr == FR_OK) {
+        ESP_LOGI(TAG_USB, "Mount successful on %s", drive_path);
+        print_usb_drive_details(msc_class, drive_path);
+
+        // ทดสอบเขียน-อ่านไฟล์ขนาด 8 MB โดยส่งข้อมูลรอบละ 64 KB
+        usb_storage_benchmark(drive_path, 16, 64);
+    } else {
+        ESP_LOGE(TAG_USB, "Mount failed on %s (Error code: %d)", drive_path, fr);
+        f_mount(NULL, drive_path, 0);
+        diskio_unregister_driver(pdrv);
+        s_usb_drives[slot_idx].msc = NULL;
+    }
+}
+
+void usbh_msc_stop(struct usbh_msc *msc_class) {
+    for (int i = 0; i < 2; i++) {
+        if (s_usb_drives[i].msc == msc_class) {
+            char drive_path[8];
+            snprintf(drive_path, sizeof(drive_path), "%u:", s_usb_drives[i].pdrv);
+
+            f_mount(NULL, drive_path, 0);                 // Unmount ออกจาก FatFS
+            diskio_unregister_driver(s_usb_drives[i].pdrv); // คืน Slot ใน diskio
+
+            printf("USB Drive removed from pdrv: %u\n", s_usb_drives[i].pdrv);
+            s_usb_drives[i].msc = NULL;
+            break;
+        }
+    }
+}
+
+// แปลงความเร็ว USB เป็นข้อความ
+static const char *get_usb_speed_str(uint8_t speed) {
+    switch (speed) {
+        case USB_SPEED_LOW:  return "Low Speed (1.5 Mbps)";
+        case USB_SPEED_FULL: return "Full Speed (12 Mbps)";
+        case USB_SPEED_HIGH: return "High Speed (480 Mbps)";
+        default:             return "Unknown";
+    }
+}
+
+// แปลงชนิดระบบไฟล์ของ FatFS เป็นข้อความ
+static const char *get_fs_type_str(BYTE fs_type) {
+    switch (fs_type) {
+        case FS_FAT12: return "FAT12";
+        case FS_FAT16: return "FAT16";
+        case FS_FAT32: return "FAT32";
+        case FS_EXFAT: return "exFAT";
+        default:       return "Unknown/RAW";
+    }
+}
+
+void print_usb_drive_details(struct usbh_msc *msc_class, const char *drive_path) {
+    if (!msc_class) return;
+
+    ESP_LOGI(TAG_USB, "==================================================");
+    ESP_LOGI(TAG_USB, "           USB DRIVE SPECIFICATION REPORT         ");
+    ESP_LOGI(TAG_USB, "==================================================");
+
+    /* -----------------------------------------------------------
+     * 1. ข้อมูลระดับ USB Controller & Device Descriptor (CherryUSB)
+     * ----------------------------------------------------------- */
+    struct usbh_hubport *hport = msc_class->hport;
+    if (hport) {
+        ESP_LOGI(TAG_USB, "[USB Hardware]");
+        ESP_LOGI(TAG_USB, "  - Connection Speed : %s", get_usb_speed_str(hport->speed));
+        ESP_LOGI(TAG_USB, "  - Device Address   : %d", hport->dev_addr);
+        ESP_LOGI(TAG_USB, "  - Vendor ID (VID)  : 0x%04X", hport->device_desc.idVendor);
+        ESP_LOGI(TAG_USB, "  - Product ID (PID) : 0x%04X", hport->device_desc.idProduct);
+        ESP_LOGI(TAG_USB, "  - USB Version      : %X.%02X", 
+                 hport->device_desc.bcdUSB >> 8, hport->device_desc.bcdUSB & 0xFF);
+    }
+
+    /* -----------------------------------------------------------
+     * 2. ข้อมูลระดับ Block Device / SCSI Layer (CherryUSB)
+     * ----------------------------------------------------------- */
+    uint32_t block_size = msc_class->blocksize;
+    uint64_t total_blocks = msc_class->blocknum;
+    uint64_t raw_capacity_bytes = total_blocks * (uint64_t)block_size;
+    double raw_capacity_gb = (double)raw_capacity_bytes / (1024.0 * 1024.0 * 1024.0);
+
+    ESP_LOGI(TAG_USB, "[SCSI Block Storage]");
+    ESP_LOGI(TAG_USB, "  - Sector/Block Size: %lu Bytes", (unsigned long)block_size);
+    ESP_LOGI(TAG_USB, "  - Total Sectors    : %llu", (unsigned long long)total_blocks);
+    ESP_LOGI(TAG_USB, "  - Raw Disk Size    : %.2f GB (%llu MB)", 
+             raw_capacity_gb, (unsigned long long)(raw_capacity_bytes / (1024 * 1024)));
+
+    /* -----------------------------------------------------------
+     * 3. ข้อมูลระดับ Filesystem (FatFS)
+     * ----------------------------------------------------------- */
+    FATFS *fs = NULL;
+    DWORD free_clusters = 0;
+
+    // หาขนาดพื้นที่ว่างและเข้าถึงข้อมูลโครงสร้าง FATFS
+    FRESULT fr = f_getfree(drive_path, &free_clusters, &fs);
+
+    if (fr == FR_OK && fs != NULL) {
+        // อ่าน Volume Label และ Serial Number
+
+        #if FF_USE_LABEL
+        char label[34] = {0};
+        DWORD vsn = 0;
+        f_getlabel(drive_path, label, &vsn);
+        #endif
+
+        // คำนวณความจุตามโครงสร้าง Cluster ของระบบไฟล์
+        // 1 Cluster = csize * sector_size
+        uint64_t total_sectors_fs = (uint64_t)(fs->n_fatent - 2) * fs->csize;
+        uint64_t free_sectors_fs  = (uint64_t)free_clusters * fs->csize;
+
+        uint64_t total_fs_bytes = total_sectors_fs * block_size;
+        uint64_t free_fs_bytes  = free_sectors_fs * block_size;
+        uint64_t used_fs_bytes  = total_fs_bytes - free_fs_bytes;
+
+        ESP_LOGI(TAG_USB, "[Filesystem (%s)]", drive_path);
+        ESP_LOGI(TAG_USB, "  - Format Type      : %s", get_fs_type_str(fs->fs_type));
+        //ESP_LOGI(TAG_USB, "  - Volume Label     : %s", strlen(label) > 0 ? label : "[NO NAME]");
+        //ESP_LOGI(TAG_USB, "  - Volume Serial No : 0x%08lX", (unsigned long)vsn);
+        ESP_LOGI(TAG_USB, "  - Cluster Size     : %lu Bytes (%u Sectors)", 
+                 (unsigned long)(fs->csize * block_size), fs->csize);
+        ESP_LOGI(TAG_USB, "  - Total Volume Size: %.2f GB", (double)total_fs_bytes / (1024.0 * 1024.0 * 1024.0));
+        ESP_LOGI(TAG_USB, "  - Used Space       : %.2f GB (%.1f%%)", 
+                 (double)used_fs_bytes / (1024.0 * 1024.0 * 1024.0),
+                 total_fs_bytes > 0 ? ((double)used_fs_bytes / total_fs_bytes) * 100.0 : 0.0);
+        ESP_LOGI(TAG_USB, "  - Free Space       : %.2f GB", (double)free_fs_bytes / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        ESP_LOGW(TAG_USB, "[Filesystem]");
+        ESP_LOGW(TAG_USB, "  - Could not read filesystem (f_getfree error: %d)", fr);
+        ESP_LOGW(TAG_USB, "  - Flash Drive อาจยังไม่ได้เมานต์ หรือเป็นฟอร์แมตที่ FatFS ไม่รองรับ");
+    }
+
+    ESP_LOGI(TAG_USB, "==================================================");
+}
+
+static const char *TAG_USBH = "USBH_INIT";
+
+static void usb(void *p){
+ /*
+     * usbh_initialize(busid, reg_base)
+     * - busid: 0 (Bus หมายเลข 0)
+     * - reg_base: Base address ของคอนโทรลเลอร์ Synopsys DWC2
+     */
+    int ret = usbh_initialize(0, (uintptr_t)ESP_USB_HS0_BASE, NULL);
+    if (ret != 0) {
+        ESP_LOGE(TAG_USBH, "usbh_initialize failed! (Error: %d)", ret);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG_USBH, "USB Host ready! Waiting for devices...");
+
+    // CherryUSB Host ใช้ระบบ Interrupt และมี Hub Task ภายในคอยจัดการ
+    // Task นี้สามารถปล่อยให้ Sleep เพื่อประหยัด CPU ได้
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+void app_main(void) {
+  check_task_stack("MAIN_START", NULL);
+
+  rv_utils_enable_fpu();
+
+  /*
+
+  esp_ldo_channel_config_t ldo_mipi_phy_config = {
+      .chan_id = 3,       // TEST_MIPI_DSI_PHY_PWR_LDO_CHAN,
+      .voltage_mv = 2500, // TEST_MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV,
+  };
+  ESP_ERROR_CHECK(esp_ldo_acquire_channel(&ldo_mipi_phy_config, &ldo_mipi_phy));
+
+  ESP_LOGI(TAG, "Initialize MIPI DSI bus");
+  esp_lcd_dsi_bus_config_t bus_config = EK79007_PANEL_BUS_DSI_2CH_CONFIG();
+  bus_config.lane_bit_rate_mbps = 1200;
+  ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus));
+
+  ESP_LOGI(TAG, "Install panel IO");
+  esp_lcd_dbi_io_config_t dbi_config = EK79007_PANEL_IO_DBI_CONFIG();
+  ESP_ERROR_CHECK(
+      esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &mipi_dbi_io));
+
+  ESP_LOGI(TAG, "Install LCD driver of ek79007");
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+  esp_lcd_dpi_panel_config_t dpi_config =
+      EK79007_1024_600_PANEL_60HZ_CONFIG_CF(LCD_COLOR_FMT_RGB565);
+  dpi_config.dpi_clock_freq_mhz = 70;
+  dpi_config.num_fbs = 2;
+#else
+  esp_lcd_dpi_panel_config_t dpi_config =
+      EK79007_1024_600_PANEL_60HZ_CONFIG(TEST_MIPI_DPI_PX_FORMAT);
+#endif
+  ek79007_vendor_config_t vendor_config = {
+      .mipi_config =
+          {
+              .dsi_bus = mipi_dsi_bus,
+              .dpi_config = &dpi_config,
+              .lane_num = 2, // TEST_MIPI_DSI_LANE_NUM,
+          },
+  };
+  const esp_lcd_panel_dev_config_t panel_config = {
+      .reset_gpio_num = 33, // TEST_PIN_NUM_LCD_RST,
+      .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+      .bits_per_pixel = 16, // TEST_LCD_BIT_PER_PIXEL,
+      .vendor_config = &vendor_config,
+  };
+
+  ESP_ERROR_CHECK(esp_lcd_new_panel_ek79007(mipi_dbi_io, &panel_config, &panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_dpi_panel_enable_dma2d(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+
+  bsp_enable_backlight();
+
+  i2c_master_bus_config_t i2c_bus_config = {
+      .clk_source = I2C_CLK_SRC_DEFAULT,
+      .i2c_port = I2C_NUM_0,
+      .scl_io_num = TOUCH_I2C_SCL,
+      .sda_io_num = TOUCH_I2C_SDA,
+      .glitch_ignore_cnt = 7,
+      .flags.enable_internal_pullup = true,
+  };
+
+  ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle));
+
+  const lvgl_port_display_cfg_t disp_cfg = {
+      .panel_handle = panel_handle,
+      .buffer_size = LCD_H_RES * LCD_V_RES,
+      .double_buffer = true,
+      .hres = LCD_H_RES,
+      .vres = LCD_V_RES,
+      .monochrome = false,
+      .color_format = LV_COLOR_FORMAT_RGB565,
+      .flags = {
+          .swap_bytes = false,
+          .buff_dma = true,
+          .buff_spiram = true,
+          .direct_mode = true,
+          .sw_rotate = true,
+      }};
+
+  const lvgl_port_display_dsi_cfg_t dsi_cfg = {
+      .flags = {
+          .avoid_tearing = true, // เปิดสร้าง Semaphore รอ VSYNC เพื่อภาพไร้รอยฉีก
+      }};
+
+  lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+  lvgl_cfg.task_stack = 16 * 1024;
+  lvgl_cfg.timer_period_ms = 2;
+  lvgl_cfg.task_priority = 12;
+  esp_err_t err = lvgl_port_init(&lvgl_cfg);
+
+  display = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
+
+  extern lvgl_port_ctx_t lvgl_port_ctx;
+
+  if (lvgl_port_ctx.lvgl_task)
+    vd_task_mgr_register_task(lvgl_port_ctx.lvgl_task);
+
+  if (lvgl_port_lock(100)) {
+    setup_touchscreen(display);
+    lvgl_port_unlock();
+  }
+
+  wifi_set_credentials("CNP2.4G", "08183422562022");
+  wifi_init();
+  ESP_LOGI(TAG, "WIFI OK!");
+
+  // 2. รอนิ่งจนกระทั่งได้รับ IP Address
+  ESP_LOGI(TAG, "Waiting for WiFi connection...");
+  while (!wifi_is_connected()) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+  ESP_LOGI(TAG, "WiFi ready!");
+
+  wifi_sntp_sync();
+
+  int retry = 0;
+  const int max_retries = 30;
+  while (!wifi_sntp_is_sync() && ++retry < max_retries) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+
+  if (wifi_sntp_is_sync()) {
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    char strftime_buf[64];
+    strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S",
+             &timeinfo);
+    ESP_LOGI(TAG, "NTP Sync Complete! System time: %s", strftime_buf);
+  } else {
+    ESP_LOGW(TAG, "NTP Sync timeout");
+  }
+  */
+
+      xTaskCreate(usb, "usb", 8 * 1024, NULL, 5, NULL);
+  // xTaskCreate(sd_main, "sd_main", 16 * 1024, NULL, 4, NULL);
+  // xTaskCreate(lvgl_main, "lv_main", 8 * 1024, NULL, 3, NULL);
+  check_task_stack("MAIN_END", NULL);
+  return;
+}

@@ -21,6 +21,7 @@ typedef void (*vd_payment_notify_cb_t)(void *user_data);
 typedef struct vd_badge_t vd_badge_t;
 typedef struct vd_loading_bar_t vd_loading_bar_t;
 typedef struct vd_payment_opt_dialog_t vd_payment_opt_dialog_t;
+typedef struct vd_payment_notify_t vd_payment_notify_t;
 
 typedef void (*vd_request_new_qr_cb_t)(vd_payment_opt_dialog_t *dialog);
 typedef void (*vd_payment_dialog_delete_cb_t)(vd_payment_opt_dialog_t *dialog);
@@ -75,6 +76,8 @@ typedef struct vd_payment_opt_dialog_t {
 
   vd_request_new_qr_cb_t request_new_qr_cb;
   uint32_t total_items;
+
+  vd_payment_notify_t *payment_notify;
 } vd_payment_opt_dialog_t;
 
 typedef struct vd_badge_t {

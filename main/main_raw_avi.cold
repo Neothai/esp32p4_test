@@ -490,7 +490,7 @@ esp_err_t play_avi_video(esp_lcd_panel_handle_t panel, const char *avi_path)
 
     if (!s_audio_ringbuf) {
         s_audio_ringbuf = xRingbufferCreate(64 * 1024, RINGBUF_TYPE_NOSPLIT);
-        xTaskCreate(avi_audio_stream_task, "avi_audio", 8192, NULL, 5, NULL);
+        xTaskCreate(avi_audio_stream_task, "avi_audio", 8192, NULL, 2, NULL);
     }
 
     // vbuf พักข้อมูล JPEG แต่ละเฟรม (จองใน Internal RAM เพื่อให้ DMA ดึงได้เร็วที่สุด)
@@ -673,6 +673,7 @@ void sd_test(void *p)
             continue;
         }
 
+
         int img_count = 0;
 
         while (1) {
@@ -748,7 +749,7 @@ typedef struct {
 
 // กำหนด 5 โปรไฟล์จากเร็วสุดลงไปหาปลอดภัยสุด
 static const sd_profile_t s_profiles[] = {
-    //{"UHS-I SDR50 (100MHz 4-bit)", SDMMC_FREQ_SDR50,   1.8f, SDMMC_SLOT_FLAG_UHS1, 4},
+  //  {"UHS-I SDR50 (100MHz 4-bit)", SDMMC_FREQ_SDR50,   1.8f, SDMMC_SLOT_FLAG_UHS1, 4},
     {"UHS-I DDR50 (50MHz 4-bit)",  SDMMC_FREQ_DDR50,   1.8f, SDMMC_SLOT_FLAG_UHS1, 4},
     {"High-Speed (40MHz 4-bit)",   SDMMC_FREQ_HIGHSPEED, 3.3f, 0,                      4},
     {"Standard (20MHz 4-bit)",     SDMMC_FREQ_DEFAULT, 3.3f, 0,                      4},
@@ -1143,7 +1144,7 @@ void app_main(void) {
       lv_demo_widgets();
     }
     lvgl_port_unlock();*/
-
+ 
 vTaskDelay(pdMS_TO_TICKS(3000));
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -1209,7 +1210,7 @@ vTaskDelay(pdMS_TO_TICKS(3000));
 
     xTaskCreate(sd_test, "sd", 8192, NULL, 5, NULL);
 
-    xTaskCreate(console_task, "cli_task", 4096, NULL, 3, NULL);
+    //xTaskCreate(console_task, "cli_task", 4096, NULL, 3, NULL);
 
     return;
 

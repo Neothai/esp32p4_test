@@ -9,40 +9,24 @@
 extern "C" {
 #endif
 
-#include "sdmmc_cmd.h"
+#include "ff.h"
 
-void diskio_register_sd_card(sdmmc_card_t *card);
+/* Status & Result types จาก FatFS */
+typedef BYTE    DSTATUS;
 
-/* Status of Disk Functions */
-typedef BYTE	DSTATUS;
-
-/* Results of Disk Functions */
 typedef enum {
-	RES_OK = 0,		/* 0: Successful */
-	RES_ERROR,		/* 1: R/W Error */
-	RES_WRPRT,		/* 2: Write Protected */
-	RES_NOTRDY,		/* 3: Not Ready */
-	RES_PARERR		/* 4: Invalid Parameter */
+    RES_OK = 0,
+    RES_ERROR,
+    RES_WRPRT,
+    RES_NOTRDY,
+    RES_PARERR
 } DRESULT;
-
-
-/*---------------------------------------*/
-/* Prototypes for disk control functions */
-
-
-DSTATUS disk_initialize (BYTE pdrv);
-DSTATUS disk_status (BYTE pdrv);
-DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count);
-DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count);
-DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
-
 
 /* Disk Status Bits (DSTATUS) */
 
 #define STA_NOINIT		0x01	/* Drive not initialized */
 #define STA_NODISK		0x02	/* No medium in the drive */
 #define STA_PROTECT		0x04	/* Write protected */
-
 
 /* Command code for disk_ioctrl fucntion */
 
@@ -53,26 +37,39 @@ DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
 #define GET_BLOCK_SIZE		3	/* Get erase block size (needed at FF_USE_MKFS == 1) */
 #define CTRL_TRIM			4	/* Inform device that the data on the block of sectors is no longer used (needed at FF_USE_TRIM == 1) */
 
-/* Generic command (Not used by FatFs) */
-#define CTRL_POWER			5	/* Get/Set power status */
-#define CTRL_LOCK			6	/* Lock/Unlock media removal */
-#define CTRL_EJECT			7	/* Eject media */
-#define CTRL_FORMAT			8	/* Create physical format on the media */
 
-/* MMC/SDC specific ioctl command (Not used by FatFs) */
-#define MMC_GET_TYPE		10	/* Get card type */
-#define MMC_GET_CSD			11	/* Get CSD */
-#define MMC_GET_CID			12	/* Get CID */
-#define MMC_GET_OCR			13	/* Get OCR */
-#define MMC_GET_SDSTAT		14	/* Get SD status */
-#define ISDIO_READ			55	/* Read data form SD iSDIO register */
-#define ISDIO_WRITE			56	/* Write data to SD iSDIO register */
-#define ISDIO_MRITE			57	/* Masked write data to SD iSDIO register */
+/* ฟังก์ชันมาตรฐานที่ FatFS จะมาเรียก */
+DSTATUS disk_initialize (BYTE pdrv);
+DSTATUS disk_status (BYTE pdrv);
+DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count);
+DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count);
+DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
 
-/* ATA/CF specific ioctl command (Not used by FatFs) */
-#define ATA_GET_REV			20	/* Get F/W revision */
-#define ATA_GET_MODEL		21	/* Get model name */
-#define ATA_GET_SN			22	/* Get serial number */
+/* -------------------------------------------------------------
+   โครงสร้างไดรเวอร์แบบยืดหยุ่น (Function Pointer + Context)
+   ------------------------------------------------------------- */
+typedef struct {
+    DSTATUS (*init)(void *ctx);
+    DSTATUS (*status)(void *ctx);
+    DRESULT (*read)(void *ctx, BYTE *buff, LBA_t sector, UINT count);
+    DRESULT (*write)(void *ctx, const BYTE *buff, LBA_t sector, UINT count);
+    DRESULT (*ioctl)(void *ctx, BYTE cmd, void *buff);
+} diskio_ops_t;
+
+/**
+ * @brief ลงทะเบียนไดรฟ์ใหม่เข้าสู่ระบบ FatFS
+ * @param ops ตารางฟังก์ชันของไดรฟ์นั้นๆ
+ * @param ctx พอยน์เตอร์อ้างอิงฮาร์ดแวร์ (เช่น sdmmc_card_t* หรือ struct usbh_msc*)
+ * @param out_pdrv คืนค่าหมายเลข pdrv ที่ระบบจัดสรรให้ (0, 1, 2, ...)
+ * @return DRESULT คืน RES_OK หากลงทะเบียนสำเร็จ
+ */
+DRESULT diskio_register_driver(const diskio_ops_t *ops, void *ctx, BYTE *out_pdrv);
+
+/**
+ * @brief ยกเลิกการลงทะเบียนไดรฟ์ (เช่น เมื่อถอด USB ออก)
+ * @param pdrv หมายเลขไดรฟ์ที่ต้องการถอด
+ */
+void diskio_unregister_driver(BYTE pdrv);
 
 #ifdef __cplusplus
 }

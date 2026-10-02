@@ -21,3 +21,5 @@ dependencies:
   espressif/esp_lcd_touch_gt911: ^1.2.1
   espressif/esp_lcd_touch: ^1.2.1
   lvgl/lvgl: ^9.6.0
+  espressif/cjson: ^1.7.19~2
+  cherry-embedded/cherryusb: ^1.6.1

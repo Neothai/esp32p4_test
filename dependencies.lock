@@ -1,4 +1,21 @@
 dependencies:
+  cherry-embedded/cherryusb:
+    component_hash: b8b0db4ed23d32e01ec41138600fb014bcf060a34b541daba1fca6ed22a61dfc
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.6.1
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.7.19~2
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -180,6 +197,8 @@ dependencies:
       type: service
     version: 9.6.0
 direct_dependencies:
+- cherry-embedded/cherryusb
+- espressif/cjson
 - espressif/esp_hosted
 - espressif/esp_lcd_ek79007
 - espressif/esp_lcd_touch
@@ -188,6 +207,6 @@ direct_dependencies:
 - espressif/esp_wifi_remote
 - idf
 - lvgl/lvgl
-manifest_hash: 65585da08f187f608ff2de8f4a476c50884abb72692a531d0393e1270b260697
+manifest_hash: 054f84c28ff2590b0921badf71910ac6ef5317eae7478284e27098ab24a226ed
 target: esp32p4
 version: 3.0.0

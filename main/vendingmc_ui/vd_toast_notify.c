@@ -1,5 +1,6 @@
 #include "vd_toast_notify.h"
 #include <stdlib.h>
+//#include "vd_font_manager.h"
 
 LV_FONT_DECLARE(anuphan_16);
 

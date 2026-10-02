@@ -136,7 +136,7 @@ static void setup_touchscreen(lv_display_t *display) {
         .flags.enable_internal_pullup = true,
     };
     i2c_master_bus_handle_t i2c_bus_handle;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle));
+    i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle);
 
     vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -200,7 +200,7 @@ void video_ui_init(){
   lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -50);
   
   slider_time = lv_label_create(lv_screen_active());
-  lv_label_set_text_fmt(slider_time, "%d:%d", lv_slider_get_value(slider), lv_slider_get_max_value(slider));
+  lv_label_set_text_fmt(slider_time, "%d:%d", (int)lv_slider_get_value(slider), (int)lv_slider_get_max_value(slider));
   lv_obj_align(slider_time, LV_ALIGN_OUT_RIGHT_MID, 15, 0);
   // *play_pause_btn, *play_pause_btn_txt
 }
@@ -670,6 +670,7 @@ esp_err_t display_jpeg_direct(esp_lcd_panel_handle_t panel, const char *file_pat
     ESP_LOGI(TAG, "===========================================================");
 
     return ESP_OK;
+    
 }
 
 void console_task(void *pvParameters) {
@@ -802,7 +803,7 @@ void app_main(void) {
         .flags.enable_internal_pullup = true,
     };
     i2c_master_bus_handle_t i2c_bus_handle;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle));
+    i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle);
 
     vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -846,7 +847,7 @@ void app_main(void) {
     // ใช้ฟังก์ชันเฉพาะของ MIPI-DSI
     lv_display_t *display = lvgl_port_add_disp_dsi(&disp_cfg, &dsi_cfg);
 
-    setup_touchscreen(display);
+    //setup_touchscreen(display);
 
     if(lvgl_port_lock(1000)){
       video_ui_init();
@@ -910,6 +911,7 @@ vTaskDelay(pdMS_TO_TICKS(3000));
         return;
     }
 
+    
     //ESP_ERROR_CHECK(sdmmc_card_init(&host, &s_card_info));
     sdmmc_card_print_info(stdout, &s_card_info);
 
